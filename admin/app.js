@@ -382,9 +382,14 @@
     el.ssPassword = $('#f-ss-password');
     el.ssUdp = $('#f-ss-udp');
 
-    el.confirmLayer = $('#confirm-layer');
-    el.confirmName = $('#confirm-name');
-    el.confirmDelete = $('#confirm-delete');
+    el.genericLayer = $('#generic-layer');
+    el.genericIcon = $('#generic-icon');
+    el.genericTitle = $('#generic-title');
+    el.genericBody = $('#generic-body');
+    el.genericOk = $('#generic-ok');
+    el.nodesExport = $('#nodes-export');
+    el.nodesImport = $('#nodes-import');
+    el.importFile = $('#import-file');
     el.kvLayer = $('#kv-layer');
     el.kvCopyName = $('#kv-copy-name');
     el.toasts = $('#toasts');
@@ -504,7 +509,7 @@
     state.deletingId = null;
     storageRemove('session', STORAGE_KEY);
     closeDrawer(true);
-    closeModal('confirm', true);
+    closeModal('generic', true);
     closeModal('kv', true);
     el.app.hidden = true;
     el.authScreen.hidden = false;
@@ -1090,6 +1095,7 @@
 
     try {
       var body = { rev: state.rev, nodes: nextNodes };
+      if (opts.defaults) body.defaults = opts.defaults;
       if (opts.regionOrder) body.regionOrder = opts.regionOrder;
       var data = await request('/api/config', {
         method: 'PUT',
@@ -1198,13 +1204,52 @@
     });
   }
 
+  /* 通用确认弹窗：删除节点、导入备份等不可撤销操作共用 */
+  var confirmCallback = null;
+
+  function setGenericVisual(danger) {
+    el.genericIcon.className = 'modal-icon ' + (danger ? 'tone-rose' : 'tone-indigo');
+    var use = $('use', el.genericIcon);
+    if (use) use.setAttribute('href', danger ? '#i-trash' : '#i-info');
+    el.genericOk.className = 'btn ' + (danger ? 'btn-danger' : 'btn-primary');
+  }
+
+  function openConfirm(options) {
+    var opts = options || {};
+    el.genericTitle.textContent = opts.title || '确认操作';
+    el.genericBody.textContent = '';
+    (opts.segments || [{ text: '确认执行此操作吗？' }]).forEach(function (seg) {
+      if (seg.strong) {
+        var strong = document.createElement('strong');
+        strong.textContent = seg.text;
+        el.genericBody.appendChild(strong);
+      } else {
+        el.genericBody.appendChild(document.createTextNode(seg.text));
+      }
+    });
+    el.genericOk.disabled = false;
+    el.genericOk.textContent = opts.okLabel || '确认';
+    setGenericVisual(opts.danger !== false);
+    confirmCallback = typeof opts.onOk === 'function' ? opts.onOk : null;
+    openModal('generic');
+  }
+
   function askDelete(id) {
     if (!ensureWritable()) return;
     var target = findNode(id);
     if (!target) return;
     state.deletingId = id;
-    el.confirmName.textContent = target.name;
-    openModal('confirm');
+    openConfirm({
+      title: '删除这个节点？',
+      segments: [
+        { text: '即将删除 ' },
+        { strong: true, text: target.name },
+        { text: '，该操作会立即写入订阅且无法撤销。' }
+      ],
+      okLabel: '删除节点',
+      danger: true,
+      onOk: confirmDelete
+    });
   }
 
   async function confirmDelete() {
@@ -1212,22 +1257,101 @@
     if (!id || state.mutating) return;
     var target = findNode(id);
     if (!target) {
-      closeModal('confirm');
+      closeModal('generic');
       return;
     }
-    el.confirmDelete.disabled = true;
-    el.confirmDelete.textContent = '删除中…';
+    el.genericOk.disabled = true;
+    el.genericOk.textContent = '删除中…';
     var nextNodes = nodes().filter(function (node) { return node.id !== id; });
     var ok = await saveNodes(nextNodes, {
       successMessage: '节点「' + target.name + '」已删除',
       rerenderOnError: true
     });
-    el.confirmDelete.disabled = false;
-    el.confirmDelete.textContent = '删除节点';
+    el.genericOk.disabled = false;
+    el.genericOk.textContent = '删除节点';
     if (ok) {
       state.deletingId = null;
-      closeModal('confirm');
+      closeModal('generic');
     }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* backup export / import                                              */
+  /* ------------------------------------------------------------------ */
+
+  function backupStamp() {
+    var now = new Date();
+    var pad = function (n) { return String(n).padStart(2, '0'); };
+    return now.getFullYear() + pad(now.getMonth() + 1) + pad(now.getDate()) +
+      '-' + pad(now.getHours()) + pad(now.getMinutes());
+  }
+
+  function exportBackup() {
+    if (!state.config) return;
+    var payload = {
+      app: 'transit-hub',
+      v: 1,
+      exportedAt: new Date().toISOString(),
+      nodes: nodes(),
+      defaults: currentDefaults(),
+      regionOrder: (state.config && state.config.regionOrder) || {}
+    };
+    var blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
+    var url = URL.createObjectURL(blob);
+    var link = document.createElement('a');
+    link.href = url;
+    link.download = 'transit-hub-backup-' + backupStamp() + '.json';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    toast('备份已导出（' + nodes().length + ' 个节点）', 'success');
+  }
+
+  function importBackupFile(file) {
+    if (!file || !ensureWritable()) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+      var parsed;
+      try {
+        parsed = JSON.parse(reader.result);
+      } catch (err) {
+        toast('备份文件不是有效的 JSON', 'error');
+        return;
+      }
+      if (!parsed || !Array.isArray(parsed.nodes)) {
+        toast('备份文件格式不正确：缺少节点数据', 'error');
+        return;
+      }
+      openConfirm({
+        title: '导入备份？',
+        segments: [
+          { text: '将用备份文件覆盖当前全部配置（' },
+          { strong: true, text: String(parsed.nodes.length) + ' 个节点' },
+          { text: '），包括参数预设与分组排序，该操作无法撤销。' }
+        ],
+        okLabel: '确认导入',
+        danger: false,
+        onOk: function () { doImport(parsed); }
+      });
+    };
+    reader.onerror = function () { toast('读取备份文件失败', 'error'); };
+    reader.readAsText(file);
+  }
+
+  async function doImport(parsed) {
+    if (state.mutating) return;
+    el.genericOk.disabled = true;
+    el.genericOk.textContent = '导入中…';
+    var ok = await saveNodes(parsed.nodes, {
+      defaults: parsed.defaults && typeof parsed.defaults === 'object' ? parsed.defaults : {},
+      regionOrder: parsed.regionOrder && typeof parsed.regionOrder === 'object' ? parsed.regionOrder : {},
+      successMessage: '已导入备份（' + parsed.nodes.length + ' 个节点）',
+      rerenderOnError: true
+    });
+    el.genericOk.disabled = false;
+    el.genericOk.textContent = '确认导入';
+    if (ok) closeModal('generic');
   }
 
   /* ------------------------------------------------------------------ */
@@ -1861,20 +1985,20 @@
   }
 
   function openModal(name) {
-    var layer = name === 'confirm' ? el.confirmLayer : el.kvLayer;
+    var layer = name === 'generic' ? el.genericLayer : el.kvLayer;
     if (!layer) return;
     window.clearTimeout(openModal[name + 'Timer']);
     layer.hidden = false;
     window.requestAnimationFrame(function () {
       layer.classList.add('is-open');
       syncBodyLock();
-      var focusTarget = name === 'confirm' ? el.confirmDelete : el.kvCopyName;
+      var focusTarget = name === 'generic' ? el.genericOk : el.kvCopyName;
       if (focusTarget) window.setTimeout(function () { focusTarget.focus(); }, 120);
     });
   }
 
   function closeModal(name, immediate) {
-    var layer = name === 'confirm' ? el.confirmLayer : el.kvLayer;
+    var layer = name === 'generic' ? el.genericLayer : el.kvLayer;
     if (!layer || layer.hidden) return;
     layer.classList.remove('is-open');
     window.clearTimeout(openModal[name + 'Timer']);
@@ -1887,7 +2011,10 @@
         syncBodyLock();
       }, 200);
     }
-    if (name === 'confirm') state.deletingId = null;
+    if (name === 'generic') {
+      state.deletingId = null;
+      confirmCallback = null;
+    }
   }
 
   function isLayerOpen(layer) {
@@ -2140,7 +2267,21 @@
     $('#gen-hy-password').addEventListener('click', function () { setField(el.hyPassword, generatePassword()); });
     $('#gen-ss-password').addEventListener('click', function () { setField(el.ssPassword, generatePassword()); });
 
-    el.confirmDelete.addEventListener('click', confirmDelete);
+    el.genericOk.addEventListener('click', function () {
+      var callback = confirmCallback;
+      confirmCallback = null;
+      if (callback) callback();
+    });
+
+    el.nodesExport.addEventListener('click', exportBackup);
+    el.nodesImport.addEventListener('click', function () {
+      if (ensureWritable()) el.importFile.click();
+    });
+    el.importFile.addEventListener('change', function () {
+      var file = el.importFile.files && el.importFile.files[0];
+      el.importFile.value = '';
+      if (file) importBackupFile(file);
+    });
     el.previewRefresh.addEventListener('click', function () { loadPreview(true); });
     el.previewCopy.addEventListener('click', copyYaml);
     el.previewDownload.addEventListener('click', downloadYaml);
@@ -2151,7 +2292,7 @@
 
       if (event.key === 'Escape') {
         if (isLayerOpen(el.kvLayer)) { closeModal('kv'); return; }
-        if (isLayerOpen(el.confirmLayer)) { closeModal('confirm'); return; }
+        if (isLayerOpen(el.genericLayer)) { closeModal('generic'); return; }
         if (isLayerOpen(el.drawerLayer)) { closeDrawer(); return; }
       }
 

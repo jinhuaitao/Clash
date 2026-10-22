@@ -68,6 +68,7 @@
     <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h9M17.5 7H20M4 17h3M11.5 17H20"/><circle cx="15" cy="7" r="2.2"/><circle cx="9" cy="17" r="2.2"/></symbol>
     <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol>
     <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4M7.5 8.5 12 4l4.5 4.5M4.5 16v3.5A1.5 1.5 0 0 0 6 21h12a1.5 1.5 0 0 0 1.5-1.5V16"/></symbol>
   </defs>
 </svg>
 
@@ -380,7 +381,10 @@
           </div>
           <div class="page-actions">
             <button class="btn btn-secondary" type="button" id="nodes-copy"><svg class="icon"><use href="#i-link"></use></svg>复制订阅链接</button>
+            <button class="btn btn-secondary" type="button" id="nodes-export"><svg class="icon"><use href="#i-download"></use></svg>导出备份</button>
+            <button class="btn btn-secondary" type="button" id="nodes-import"><svg class="icon"><use href="#i-upload"></use></svg>导入备份</button>
             <button class="btn btn-primary" type="button" id="nodes-add"><svg class="icon"><use href="#i-plus"></use></svg>添加节点</button>
+            <input type="file" id="import-file" accept="application/json,.json" hidden>
           </div>
         </div>
 
@@ -855,15 +859,15 @@
   </aside>
 </div>
 
-<div class="modal-layer" id="confirm-layer" hidden>
-  <div class="modal-backdrop" data-close-modal="confirm"></div>
-  <div class="modal" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title">
-    <span class="modal-icon tone-rose"><svg class="icon"><use href="#i-trash"></use></svg></span>
-    <h2 id="confirm-title">删除这个节点？</h2>
-    <p>即将删除 <strong id="confirm-name">—</strong>，该操作会立即写入订阅且无法撤销。</p>
+<div class="modal-layer" id="generic-layer" hidden>
+  <div class="modal-backdrop" data-close-modal="generic"></div>
+  <div class="modal" role="alertdialog" aria-modal="true" aria-labelledby="generic-title">
+    <span class="modal-icon tone-rose" id="generic-icon"><svg class="icon"><use href="#i-trash"></use></svg></span>
+    <h2 id="generic-title">确认操作</h2>
+    <p id="generic-body">—</p>
     <div class="modal-actions">
-      <button class="btn btn-secondary" type="button" data-close-modal="confirm">取消</button>
-      <button class="btn btn-danger" type="button" id="confirm-delete">删除节点</button>
+      <button class="btn btn-secondary" type="button" data-close-modal="generic">取消</button>
+      <button class="btn btn-danger" type="button" id="generic-ok">确认</button>
     </div>
   </div>
 </div>
