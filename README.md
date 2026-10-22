@@ -10,6 +10,9 @@
 
 - **订阅输出**：`GET /?token=<AUTH_TOKEN>` 返回 Clash / Mihomo 可直接使用的 YAML，带 `subscription-userinfo` 与 `profile-update-interval` 响应头。
 - **管理控制台**：`/admin`，令牌登录，支持节点增删改、启用/停用、一键复制、协议筛选、订阅实时预览与下载。
+- **节点排序**：节点管理页用 ↑ ↓ 调整节点顺序，顺序会直接反映到订阅 YAML 与策略组中。
+- **🌍 选择节点显示开关**：添加/编辑节点时可关闭「在🌍选择节点中显示」，该节点仍保留在所属分组与应用策略组中，只是不再列入全局选择列表。
+- **参数预设**：控制台新增「参数预设」页，可设置固定的 UUID、Reality 公钥、Short ID、SNI / 回落域名；新建 VLESS 节点时自动填入，不用每次重复粘贴。
 - **协议支持**：VLESS（Reality / WS / gRPC）、Hysteria2、Trojan、VMess、Shadowsocks。
 - **策略组自动编排**：按分组（欧美 / 日韩 / 港台 / 中转）自动生成策略组，并自动挂载 ChatGPT / Google / YouTube / Telegram 应用分流组。
 - **伪装的访客页面**：未携带正确令牌访问根路径时，返回一个普通的「IP 地址查询」页面，不暴露服务性质。
@@ -150,6 +153,12 @@ node build.mjs && node test/worker.test.mjs # 20 项接口/安全测试
   "v": 1,
   "rev": 3,
   "updatedAt": "2026-01-01T00:00:00.000Z",
+  "defaults": {
+    "vlessUuid": "…",
+    "vlessPublicKey": "…",
+    "vlessShortId": "…",
+    "vlessServername": "…"
+  },
   "nodes": [
     {
       "id": "n_xxx",
@@ -159,6 +168,7 @@ node build.mjs && node test/worker.test.mjs # 20 项接口/安全测试
       "port": 443,
       "region": "hk",
       "enabled": true,
+      "showInMain": true,
       "tags": ["chatgpt"],
       "uuid": "…",
       "network": "tcp",
