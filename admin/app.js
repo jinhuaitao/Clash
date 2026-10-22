@@ -716,11 +716,39 @@
     if (el.previewCopySub) el.previewCopySub.disabled = !url;
   }
 
-  function renderNodeList() {
-    if (!state.config) return;
+  var GROUP_REGIONS = ['us', 'jp', 'hk', 'relay'];
+
+  function isGroupRegion(region) {
+    return GROUP_REGIONS.indexOf(region) !== -1;
+  }
+
+  // 某分组的节点 id 顺序：独立顺序表优先，未收录的按全局顺序追加
+  function orderedRegionIds(region) {
+    var stored = ((state.config && state.config.regionOrder) || {})[region] || [];
+    var ids = nodes()
+      .filter(function (node) { return node.region === region; })
+      .map(function (node) { return node.id; });
+    var seen = {};
+    var out = [];
+    stored.forEach(function (id) {
+      if (ids.indexOf(id) !== -1 && !seen[id]) {
+        seen[id] = true;
+        out.push(id);
+      }
+    });
+    ids.forEach(function (id) {
+      if (!seen[id]) {
+        seen[id] = true;
+        out.push(id);
+      }
+    });
+    return out;
+  }
+
+  function filteredNodes() {
     var all = nodes();
     var query = state.query.trim().toLowerCase();
-    var filtered = all.filter(function (node) {
+    return all.filter(function (node) {
       if (state.filterType !== 'all' && node.type !== state.filterType) return false;
       if (state.filterRegion !== 'all' && node.region !== state.filterRegion) return false;
       if (!query) return true;
@@ -732,6 +760,24 @@
       var haystack = [node.name, node.server, node.type, type.label, region.short, region.group, tagText].join(' ').toLowerCase();
       return haystack.indexOf(query) !== -1;
     });
+  }
+
+  function renderNodeList() {
+    if (!state.config) return;
+    var all = nodes();
+    var query = state.query.trim().toLowerCase();
+    var filtered = filteredNodes();
+    // 按分组筛选时，列表按该分组的独立顺序展示
+    if (!query && isGroupRegion(state.filterRegion)) {
+      var rank = {};
+      orderedRegionIds(state.filterRegion).forEach(function (id, i) { rank[id] = i; });
+      var far = 1e9;
+      filtered.sort(function (a, b) {
+        var ra = rank[a.id] === undefined ? far : rank[a.id];
+        var rb = rank[b.id] === undefined ? far : rank[b.id];
+        return ra - rb;
+      });
+    }
 
     el.nodeCountLabel.textContent = query || state.filterType !== 'all' || state.filterRegion !== 'all'
       ? filtered.length + ' / ' + all.length + ' 个节点'
@@ -742,7 +788,7 @@
     el.nodeEmptyFilter.hidden = !(all.length > 0 && filtered.length === 0);
     el.nodeList.hidden = filtered.length === 0;
 
-    var sortable = !query && state.filterType === 'all' && state.filterRegion === 'all';
+    var sortable = !query;
     el.nodeList.innerHTML = filtered.map(function (node, index) {
       return renderNodeRow(node, index, filtered.length, sortable);
     }).join('');
@@ -795,14 +841,44 @@
 
   async function moveNode(id, dir, button) {
     if (!ensureWritable() || state.mutating) return;
-    var list = nodes();
-    var index = list.findIndex(function (node) { return node.id === id; });
-    var target = index + dir;
-    if (index < 0 || target < 0 || target >= list.length) return;
+    var view = filteredNodes();
+    var viewIndex = view.findIndex(function (node) { return node.id === id; });
+    var viewTarget = viewIndex + dir;
+    if (viewIndex < 0 || viewTarget < 0 || viewTarget >= view.length) return;
     setRowBusy(button, true);
-    var nextNodes = list.slice();
-    var moved = nextNodes.splice(index, 1)[0];
-    nextNodes.splice(target, 0, moved);
+
+    // 按分组筛选时：只改该分组的独立顺序表，不动全局顺序，其他分组与 🌍组不受影响
+    if (isGroupRegion(state.filterRegion)) {
+      var order = orderedRegionIds(state.filterRegion);
+      var idA = view[viewIndex].id;
+      var idB = view[viewTarget].id;
+      var pa = order.indexOf(idA);
+      var pb = order.indexOf(idB);
+      if (pa < 0 || pb < 0) {
+        if (button) button.disabled = false;
+        return;
+      }
+      var tmp = order[pa];
+      order[pa] = order[pb];
+      order[pb] = tmp;
+      var regionOrder = Object.assign({}, (state.config && state.config.regionOrder) || {});
+      regionOrder[state.filterRegion] = order;
+      var okGroup = await saveNodes(nodes(), {
+        regionOrder: regionOrder,
+        successMessage: '分组内顺序已更新，不影响其他分组',
+        rerenderOnError: true
+      });
+      if (!okGroup && button) button.disabled = false;
+      return;
+    }
+
+    // 未筛选（或按协议筛选）：调整全局顺序
+    var nextNodes = nodes().slice();
+    var a = nextNodes.findIndex(function (node) { return node.id === view[viewIndex].id; });
+    var b = nextNodes.findIndex(function (node) { return node.id === view[viewTarget].id; });
+    var moved = nextNodes[a];
+    nextNodes[a] = nextNodes[b];
+    nextNodes[b] = moved;
     var ok = await saveNodes(nextNodes, {
       successMessage: dir < 0 ? '节点已上移' : '节点已下移',
       rerenderOnError: true
@@ -1007,9 +1083,11 @@
     if (opts.form) setSaveBusy(true);
 
     try {
+      var body = { rev: state.rev, nodes: nextNodes };
+      if (opts.regionOrder) body.regionOrder = opts.regionOrder;
       var data = await request('/api/config', {
         method: 'PUT',
-        body: { rev: state.rev, nodes: nextNodes }
+        body: body
       });
       applyConfig(data);
       renderAll();
