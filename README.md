@@ -29,16 +29,14 @@
 │   ├── worker.js          # Worker 入口（ES Module，export default { fetch }）
 │   ├── static-head.yaml   # 订阅 YAML 的固定头部（端口 / DNS / 模式）
 │   └── rules.yaml         # 分流规则与 rule-providers
-├── test/
-│   ├── worker.test.mjs    # 单元/接口测试（直接 import 构建产物）
-│   ├── server.mjs         # 本地开发服务器（内存 KV）
-│   └── capture-desktop.mjs# 用无头 Chrome 截图（可选）
 ├── build.mjs              # 把 admin/* 内联进 worker.js，输出 dist/1.js
 ├── wrangler.toml          # Worker 配置 + KV 绑定声明
 └── package.json
 ```
 
 构建产物 `dist/1.js` 是唯一被部署的文件，已在 `.gitignore` 中忽略，由 CI 现场生成。
+
+本地开发用的 `test/` 目录（接口测试、本地服务器、截图脚本）同样不纳入版本控制，因此仓库里看不到它。如果你 clone 下来想跑测试，需要自行准备这三个脚本；不跑测试对部署没有任何影响。
 
 ---
 
@@ -116,12 +114,9 @@ Wrangler 在部署时（Cloudflare Workers Builds 会自动注入 `CLOUDFLARE_AP
 ```bash
 npm install
 npm run build      # 产出 dist/1.js
-npm run dev        # 启动 http://127.0.0.1:8787，使用内存 KV，重启即清空
 ```
 
-本地默认令牌：`AUTH_TOKEN=sub-test-token`、`ADMIN_TOKEN=admin-test-token`（可用环境变量覆盖）。
-
-想用真实的 Wrangler 运行时与本地 KV：
+用 Wrangler 的本地运行时与本地 KV 起服务：
 
 ```bash
 cp .dev.vars.example .dev.vars   # 填入令牌，该文件已被 git 忽略
@@ -129,10 +124,11 @@ npm run build
 npx wrangler dev
 ```
 
-跑测试：
+`package.json` 里只有 `build` / `deploy` / `tail` 三个脚本，不引用任何本地工具。如果你本地保留了 `test/` 目录（不随仓库分发），可以直接用 node 运行：
 
 ```bash
-npm test           # 构建 + 20 项接口/安全测试
+node build.mjs && node test/server.mjs      # 本地服务器，内存 KV，默认 127.0.0.1:8787
+node build.mjs && node test/worker.test.mjs # 20 项接口/安全测试
 ```
 
 ---
