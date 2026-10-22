@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#f5f6fa">
+<title>Transit Hub · 订阅控制台</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='11' fill='%234f46e5'/%3E%3Cpath d='M12 25.5 20 12l8 13.5-8 4.6-8-4.6Z' fill='none' stroke='white' stroke-width='1.8' stroke-linejoin='round'/%3E%3C/svg%3E">
+<style>/*__CSS__*/</style>
+<script nonce="__CSP_NONCE__">
+(function () {
+  try {
+    var saved = localStorage.getItem('th.theme');
+    var theme = saved === 'light' || saved === 'dark'
+      ? saved
+      : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    document.documentElement.dataset.theme = theme;
+  } catch (err) {
+    document.documentElement.dataset.theme = 'light';
+  }
+})();
+</script>
+</head>
+<body>
+
+<svg xmlns="http://www.w3.org/2000/svg" class="svg-sprite" aria-hidden="true">
+  <defs>
+    <symbol id="i-brand" viewBox="0 0 40 40">
+      <rect x="0" y="0" width="40" height="40" rx="11" fill="#4f46e5" stroke="none"/>
+      <rect x="0.75" y="0.75" width="38.5" height="38.5" rx="10.4" fill="none" stroke="rgba(255,255,255,.22)" stroke-width="1"/>
+      <path d="M12 25.5 20 12l8 13.5-8 4.6-8-4.6Z" fill="none" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"/>
+      <circle cx="20" cy="12" r="2.1" fill="#fff" stroke="none"/>
+      <circle cx="12" cy="25.5" r="2.1" fill="#fff" opacity=".85" stroke="none"/>
+      <circle cx="28" cy="25.5" r="2.1" fill="#fff" opacity=".85" stroke="none"/>
+    </symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/></symbol>
+    <symbol id="i-server" viewBox="0 0 24 24"><rect x="3.5" y="4" width="17" height="7" rx="2"/><rect x="3.5" y="13" width="17" height="7" rx="2"/><circle cx="7.5" cy="7.5" r=".9" fill="currentColor" stroke="none"/><circle cx="7.5" cy="16.5" r=".9" fill="currentColor" stroke="none"/><path d="M11 7.5h6M11 16.5h6"/></symbol>
+    <symbol id="i-code" viewBox="0 0 24 24"><path d="m8.5 8-4 4 4 4M15.5 8l4 4-4 4M13.5 5l-3 14"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></symbol>
+    <symbol id="i-pen" viewBox="0 0 24 24"><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16v4Z"/><path d="m13.5 6.5 4 4"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2.5"/><path d="M15.5 9V6.5A2.5 2.5 0 0 0 13 4H6.5A2.5 2.5 0 0 0 4 6.5V13a2.5 2.5 0 0 0 2.5 2.5H9"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6.5 7l.8 12.2A2 2 0 0 0 9.3 21h5.4a2 2 0 0 0 2-1.8L17.5 7M9 7V4.8A1.8 1.8 0 0 1 10.8 3h2.4A1.8 1.8 0 0 1 15 4.8V7"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.8"/></symbol>
+    <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M4 4l16 16"/><path d="M9.9 5.2A9.8 9.8 0 0 1 12 5c6 0 9.5 7 9.5 7a17.7 17.7 0 0 1-3.3 4.1M6.1 6.6A17.5 17.5 0 0 0 2.5 12S6 19 12 19a9.7 9.7 0 0 0 4.2-.9"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"/></symbol>
+    <symbol id="i-logout" viewBox="0 0 24 24"><path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4M15 8l4 4-4 4M19 12H9"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14-4.5L4 9M4 4v5h5M4 13a8 8 0 0 0 14 4.5L20 15M20 20v-5h-5"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7.5 11.5 12 16l4.5-4.5M5 20h14"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4 2.8 20h18.4L12 4Z"/><path d="M12 9.5v5M12 17.6h.01"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 7.8h.01"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></symbol>
+    <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+    <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3v8"/><path d="M7.2 6.2a8 8 0 1 0 9.6 0"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3.5 12.5 8.5 4.7 8.5-4.7M3.5 16.8l8.5 4.7 8.5-4.7"/></symbol>
+    <symbol id="i-zap" viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8Z"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.4 2.4 3.6 5.3 3.6 8.5s-1.2 6.1-3.6 8.5c-2.4-2.4-3.6-5.3-3.6-8.5S9.6 5.9 12 3.5Z"/></symbol>
+    <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M16 7l2.5 2.5M19 4l2 2"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="M10.5 13.5a4.5 4.5 0 0 0 6.4 0l2.6-2.6a4.5 4.5 0 1 0-6.4-6.4L11.5 6"/><path d="M13.5 10.5a4.5 4.5 0 0 0-6.4 0l-2.6 2.6a4.5 4.5 0 1 0 6.4 6.4L12.5 18"/></symbol>
+    <symbol id="i-database" viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7.5" ry="3"/><path d="M4.5 6v12c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3V6"/><path d="M4.5 12c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 4.5 6v5.5c0 4.7 3.2 8 7.5 9.5 4.3-1.5 7.5-4.8 7.5-9.5V6L12 3Z"/><path d="m8.8 12 2.2 2.2 4.2-4.4"/></symbol>
+    <symbol id="i-route" viewBox="0 0 24 24"><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M8.5 17.5H14a4 4 0 0 0 0-8H9"/></symbol>
+    <symbol id="i-clipboard" viewBox="0 0 24 24"><rect x="5" y="4.5" width="14" height="16" rx="2.5"/><path d="M9 4.5V3.8A1.8 1.8 0 0 1 10.8 2h2.4A1.8 1.8 0 0 1 15 3.8v.7H9Z"/><path d="M9 11h6M9 15h4"/></symbol>
+  </defs>
+</svg>
+
+<div class="auth-screen" id="auth-screen">
+  <div class="auth-aurora" aria-hidden="true"><span class="aurora a"></span><span class="aurora b"></span><span class="aurora c"></span></div>
+  <div class="auth-shell">
+    <aside class="auth-story">
+      <div class="auth-story-art" aria-hidden="true">
+        <svg viewBox="0 0 520 620" fill="none">
+          <defs>
+            <linearGradient id="storyLine" x1="80" y1="560" x2="440" y2="60" gradientUnits="userSpaceOnUse">
+              <stop stop-color="#818cf8" stop-opacity="0"/>
+              <stop offset=".5" stop-color="#a5b4fc" stop-opacity=".55"/>
+              <stop offset="1" stop-color="#38bdf8" stop-opacity="0"/>
+            </linearGradient>
+            <radialGradient id="storyGlow" cx="0.5" cy="0.5" r="0.5">
+              <stop stop-color="#6366f1" stop-opacity=".45"/>
+              <stop offset="1" stop-color="#6366f1" stop-opacity="0"/>
+            </radialGradient>
+          </defs>
+          <circle cx="330" cy="250" r="220" fill="url(#storyGlow)"/>
+          <path d="M40 520C150 470 190 360 250 300s120-120 230-200" stroke="url(#storyLine)" stroke-width="1.2"/>
+          <path d="M10 380c120 20 220-30 300-110S430 120 500 70" stroke="url(#storyLine)" stroke-width="1"/>
+          <path d="M100 610c60-100 150-160 240-180s140-70 170-150" stroke="url(#storyLine)" stroke-width=".8"/>
+          <g stroke="rgba(165,180,252,.25)" stroke-width="1">
+            <circle cx="250" cy="300" r="46"/><circle cx="250" cy="300" r="94"/><circle cx="250" cy="300" r="150"/>
+          </g>
+          <g fill="#c7d2fe">
+            <circle cx="250" cy="300" r="4"/><circle cx="360" cy="190" r="3" opacity=".8"/>
+            <circle cx="150" cy="430" r="3" opacity=".6"/><circle cx="420" cy="260" r="2.5" opacity=".7"/>
+            <circle cx="300" cy="400" r="2" opacity=".5"/>
+          </g>
+          <g fill="none" stroke="rgba(165,180,252,.35)" stroke-width="1">
+            <rect x="352" y="166" width="34" height="26" rx="7"/>
+            <rect x="128" y="418" width="28" height="22" rx="6"/>
+          </g>
+        </svg>
+      </div>
+      <div class="auth-story-top">
+        <span class="brand-tile"><svg class="icon icon-24"><use href="#i-brand"></use></svg></span>
+        <span class="brand-word">Transit Hub</span>
+      </div>
+      <div class="auth-story-copy">
+        <span class="eyebrow eyebrow-light">Subscription Console</span>
+        <h1>让每一条线路，<br>都在掌控之中。</h1>
+        <p>在一个界面里维护节点、策略分组与订阅输出，变更即时同步至所有客户端。</p>
+        <ul class="auth-points">
+          <li><span class="point-icon"><svg class="icon"><use href="#i-server"></use></svg></span><div><b>结构化节点管理</b><small>VLESS、Hysteria2 等协议一处维护</small></div></li>
+          <li><span class="point-icon"><svg class="icon"><use href="#i-code"></use></svg></span><div><b>实时订阅预览</b><small>每次保存自动生成 Clash YAML</small></div></li>
+          <li><span class="point-icon"><svg class="icon"><use href="#i-zap"></use></svg></span><div><b>边缘即时生效</b><small>运行在 Cloudflare 全球网络</small></div></li>
+        </ul>
+      </div>
+      <div class="auth-story-foot"><span class="status-dot"></span>Cloudflare Workers · v2.0</div>
+    </aside>
+
+    <section class="auth-panel">
+      <div class="auth-form-head">
+        <span class="eyebrow">Admin Access</span>
+        <h2>登录控制台</h2>
+        <p>请输入管理令牌以继续，令牌不会写入日志。</p>
+      </div>
+      <form id="login-form" novalidate>
+        <div class="field">
+          <label for="login-token">管理令牌</label>
+          <div class="input-wrap">
+            <span class="input-prefix"><svg class="icon"><use href="#i-key"></use></svg></span>
+            <input id="login-token" name="token" type="password" autocomplete="current-password" spellcheck="false" placeholder="输入 ADMIN_TOKEN">
+            <button class="input-suffix" type="button" id="login-reveal" aria-label="显示令牌"><svg class="icon"><use href="#i-eye"></use></svg></button>
+          </div>
+        </div>
+        <div class="form-error" id="login-error" role="alert" hidden></div>
+        <button class="btn btn-primary btn-lg btn-block" id="login-btn" type="submit">
+          <span class="btn-label">进入控制台</span>
+          <span class="spinner" hidden></span>
+        </button>
+      </form>
+      <div class="auth-note">
+        <svg class="icon"><use href="#i-shield"></use></svg>
+        <span>令牌仅保存在当前标签页，关闭浏览器后自动退出。</span>
+      </div>
+      <div class="auth-help">
+        <span>管理令牌即部署时设置的 <code>ADMIN_TOKEN</code>；若未单独设置，则使用 <code>AUTH_TOKEN</code>。</span>
+      </div>
+    </section>
+  </div>
+  <footer class="auth-footer">Transit Hub · 安全的管理入口</footer>
+</div>
+
+<div class="app" id="app" hidden>
+  <aside class="sidebar">
+    <div class="side-head">
+      <span class="logo-tile"><svg class="icon icon-24"><use href="#i-brand"></use></svg></span>
+      <div class="logo-copy"><strong>Transit Hub</strong><span>Subscription Console</span></div>
+      <button class="icon-btn mobile-action" id="mobile-theme" title="切换主题" aria-label="切换主题"><svg class="icon"><use href="#i-moon"></use></svg></button>
+      <button class="icon-btn mobile-action" id="mobile-logout" title="退出登录" aria-label="退出登录"><svg class="icon"><use href="#i-logout"></use></svg></button>
+    </div>
+    <nav class="side-nav" aria-label="主导航">
+      <span class="nav-caption">工作台</span>
+      <button class="nav-item" type="button" data-view="overview">
+        <svg class="icon"><use href="#i-grid"></use></svg><span class="nav-text">概览</span>
+      </button>
+      <button class="nav-item" type="button" data-view="nodes">
+        <svg class="icon"><use href="#i-server"></use></svg><span class="nav-text">节点管理</span><span class="nav-badge" id="nav-count">0</span>
+      </button>
+      <button class="nav-item" type="button" data-view="preview">
+        <svg class="icon"><use href="#i-code"></use></svg><span class="nav-text">订阅预览</span>
+      </button>
+    </nav>
+    <div class="side-foot">
+      <button class="storage-card" type="button" id="storage-card">
+        <span class="status-dot" id="storage-dot"></span>
+        <span class="storage-copy"><small>配置存储</small><strong id="storage-label">正在连接</strong></span>
+        <svg class="icon storage-chevron"><use href="#i-chevron"></use></svg>
+      </button>
+      <button class="storage-hint" id="kv-help-side" type="button">
+        <svg class="icon"><use href="#i-database"></use></svg>
+        <span id="storage-hint-text">KV 命名空间已绑定</span>
+      </button>
+      <div class="side-actions">
+        <button class="side-action" type="button" id="theme-toggle">
+          <svg class="icon theme-icon"><use href="#i-moon"></use></svg>
+          <span class="theme-label">深色模式</span>
+        </button>
+        <button class="side-action" type="button" id="logout">
+          <svg class="icon"><use href="#i-logout"></use></svg><span>退出登录</span>
+        </button>
+      </div>
+    </div>
+  </aside>
+
+  <div class="workspace">
+    <header class="topbar">
+      <div class="crumbs"><span>控制台</span><span class="crumb-sep">/</span><strong id="crumb">概览</strong></div>
+      <div class="top-actions">
+        <span class="mode-pill" id="mode-pill"><span class="status-dot"></span><span id="mode-pill-text">订阅在线</span></span>
+        <button class="btn btn-secondary btn-sm" type="button" id="top-copy">
+          <svg class="icon"><use href="#i-link"></use></svg><span>订阅链接</span>
+        </button>
+        <button class="btn btn-primary btn-sm" type="button" id="top-add">
+          <svg class="icon"><use href="#i-plus"></use></svg><span>添加节点</span>
+        </button>
+      </div>
+    </header>
+
+    <main class="content">
+      <section class="view" data-view-panel="overview">
+        <div class="page-head">
+          <div>
+            <span class="eyebrow">Overview</span>
+            <h1>订阅概览</h1>
+            <p class="page-sub">集中管理节点配置，所有变更会即时反映到 Clash 订阅。</p>
+          </div>
+          <div class="page-head-meta"><span class="status-inline"><span class="status-dot"></span>服务正常</span><span id="overview-updated">—</span></div>
+        </div>
+
+        <div class="alert alert-warning" id="kv-alert" hidden>
+          <span class="alert-icon"><svg class="icon"><use href="#i-alert"></use></svg></span>
+          <div class="alert-copy">
+            <strong>配置存储尚未连接</strong>
+            <p>当前为只读模式，节点修改无法保存。确认 KV 命名空间 <code>SUB_KV</code> 已自动绑定后重新部署即可启用后台管理。</p>
+          </div>
+          <button class="btn btn-secondary btn-sm" type="button" id="kv-help-btn">查看绑定步骤</button>
+        </div>
+        <div class="alert alert-warning" id="corrupt-alert" hidden>
+          <span class="alert-icon"><svg class="icon"><use href="#i-alert"></use></svg></span>
+          <div class="alert-copy">
+            <strong>配置数据读取异常</strong>
+            <p>已载入空配置。任意保存操作都会以当前列表重建配置，请确认后再操作。</p>
+          </div>
+        </div>
+
+        <section class="hero">
+          <div class="hero-copy">
+            <div class="hero-status"><span class="live-dot"></span><span id="hero-status-text">订阅服务运行中</span><span class="hero-version">v2.0</span></div>
+            <h2>节点已就绪，随时同步<br class="hero-br">至你的每一台设备。</h2>
+            <p>编辑节点或调整分组后无需重新部署，客户端下次刷新订阅即可获取最新配置。</p>
+            <div class="hero-actions">
+              <button class="btn btn-light" type="button" id="hero-add"><svg class="icon"><use href="#i-plus"></use></svg>添加节点</button>
+              <button class="btn btn-ghost-light" type="button" id="hero-preview"><svg class="icon"><use href="#i-code"></use></svg>订阅预览</button>
+            </div>
+            <div class="sub-card">
+              <div class="sub-card-head"><span>订阅链接</span><span>包含访问令牌，请妥善保管</span></div>
+              <div class="sub-input">
+                <svg class="icon"><use href="#i-link"></use></svg>
+                <code id="sub-url-text">—</code>
+                <button class="sub-icon-btn" type="button" id="sub-reveal" title="显示 / 隐藏令牌" aria-label="显示或隐藏令牌"><svg class="icon"><use href="#i-eye"></use></svg></button>
+                <button class="sub-icon-btn" type="button" id="sub-copy" title="复制订阅链接" aria-label="复制订阅链接"><svg class="icon"><use href="#i-copy"></use></svg></button>
+              </div>
+            </div>
+          </div>
+          <div class="hero-visual" aria-hidden="true">
+            <svg viewBox="0 0 420 360" fill="none">
+              <defs>
+                <linearGradient id="heroEdge" x1="60" y1="300" x2="360" y2="60" gradientUnits="userSpaceOnUse">
+                  <stop stop-color="#6366f1" stop-opacity=".15"/>
+                  <stop offset=".5" stop-color="#a5b4fc" stop-opacity=".75"/>
+                  <stop offset="1" stop-color="#38bdf8" stop-opacity=".25"/>
+                </linearGradient>
+                <radialGradient id="heroHalo" cx=".5" cy=".5" r=".5">
+                  <stop stop-color="#6366f1" stop-opacity=".32"/><stop offset="1" stop-color="#6366f1" stop-opacity="0"/>
+                </radialGradient>
+              </defs>
+              <circle cx="230" cy="176" r="170" fill="url(#heroHalo)"/>
+              <g stroke="rgba(165,180,252,.14)" stroke-width="1">
+                <circle cx="230" cy="176" r="58"/><circle cx="230" cy="176" r="108"/><circle cx="230" cy="176" r="158"/>
+              </g>
+              <g stroke="rgba(165,180,252,.14)" stroke-width="1" stroke-dasharray="2 7">
+                <path d="M12 296 408 56M12 176h408M58 46l344 296"/>
+              </g>
+              <path d="M76 278c66-22 72-104 154-102s78 84 138 28" stroke="url(#heroEdge)" stroke-width="1.6"/>
+              <path d="M76 278 230 176l138 28" stroke="rgba(165,180,252,.22)" stroke-width="1" stroke-dasharray="4 5"/>
+              <g>
+                <circle cx="230" cy="176" r="26" fill="rgba(99,102,241,.16)" stroke="rgba(165,180,252,.5)"/>
+                <circle cx="230" cy="176" r="9" fill="#818cf8"/>
+                <circle cx="230" cy="176" r="16" stroke="rgba(165,180,252,.5)"/>
+              </g>
+              <g fill="#0f1730" stroke="rgba(165,180,252,.6)">
+                <circle cx="76" cy="278" r="16"/>
+                <circle cx="368" cy="204" r="13"/>
+                <circle cx="330" cy="90" r="10"/>
+                <circle cx="112" cy="92" r="9"/>
+              </g>
+              <g fill="#c7d2fe">
+                <circle cx="76" cy="278" r="4"/><circle cx="368" cy="204" r="3.2"/><circle cx="330" cy="90" r="2.4"/><circle cx="112" cy="92" r="2.2"/>
+              </g>
+              <g fill="rgba(199,210,254,.55)" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9" letter-spacing="1.4">
+                <text x="66" y="316">HKG-01</text><text x="344" y="236">NRT-02</text><text x="314" y="68">LAX-05</text><text x="94" y="70">SIN-03</text>
+              </g>
+            </svg>
+            <div class="hero-visual-meta">
+              <span>ACTIVE NODES</span>
+              <strong id="hero-node-count">0</strong>
+            </div>
+          </div>
+        </section>
+
+        <div class="stat-grid">
+          <article class="stat-card">
+            <div class="stat-top"><span class="stat-icon tone-indigo"><svg class="icon"><use href="#i-server"></use></svg></span><span class="stat-badge" id="stat-total-badge">全部</span></div>
+            <div class="stat-value" id="stat-total">0</div>
+            <div class="stat-label">节点总数</div>
+          </article>
+          <article class="stat-card">
+            <div class="stat-top"><span class="stat-icon tone-emerald"><svg class="icon"><use href="#i-power"></use></svg></span><span class="stat-badge tone-emerald" id="stat-enabled-badge">在线</span></div>
+            <div class="stat-value" id="stat-enabled">0</div>
+            <div class="stat-label">已启用节点</div>
+          </article>
+          <article class="stat-card">
+            <div class="stat-top"><span class="stat-icon tone-cyan"><svg class="icon"><use href="#i-layers"></use></svg></span><span class="stat-badge" id="stat-types-hint">协议</span></div>
+            <div class="stat-value" id="stat-types">0</div>
+            <div class="stat-label">协议类型</div>
+          </article>
+          <article class="stat-card">
+            <div class="stat-top"><span class="stat-icon tone-amber"><svg class="icon"><use href="#i-route"></use></svg></span><span class="stat-badge" id="stat-regions-hint">策略组</span></div>
+            <div class="stat-value" id="stat-regions">0</div>
+            <div class="stat-label">活跃分组</div>
+          </article>
+        </div>
+
+        <div class="overview-grid">
+          <section class="panel">
+            <div class="panel-head">
+              <div><h3>协议分布</h3><p>按已启用节点统计</p></div>
+              <span class="soft-pill" id="proto-total">0 在线</span>
+            </div>
+            <div class="bar-list" id="proto-bars"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-head">
+              <div><h3>系统状态</h3><p>运行环境与安全配置</p></div>
+              <span class="soft-pill soft-ok" id="sys-health">正常</span>
+            </div>
+            <ul class="kv-list">
+              <li><span class="kv-key"><svg class="icon"><use href="#i-database"></use></svg>KV 存储</span><span class="kv-val" id="sys-kv">—</span></li>
+              <li><span class="kv-key"><svg class="icon"><use href="#i-shield"></use></svg>管理认证</span><span class="kv-val" id="sys-auth">—</span></li>
+              <li><span class="kv-key"><svg class="icon"><use href="#i-layers"></use></svg>配置版本</span><span class="kv-val mono" id="sys-rev">—</span></li>
+              <li><span class="kv-key"><svg class="icon"><use href="#i-refresh"></use></svg>最后更新</span><span class="kv-val" id="sys-updated">—</span></li>
+            </ul>
+            <p class="panel-note" id="auth-hint" hidden>建议单独配置 <code>ADMIN_TOKEN</code>，避免与订阅令牌共用。</p>
+          </section>
+        </div>
+
+        <div class="overview-grid">
+          <section class="panel">
+            <div class="panel-head">
+              <div><h3>策略组构成</h3><p>节点会按所属分组自动编排</p></div>
+              <button class="link-btn" type="button" data-goto="preview">查看订阅<svg class="icon"><use href="#i-arrow-right"></use></svg></button>
+            </div>
+            <div class="region-list" id="region-bars"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-head">
+              <div><h3>节点速览</h3><p>当前配置中的前 4 个节点</p></div>
+              <button class="link-btn" type="button" data-goto="nodes">全部节点<svg class="icon"><use href="#i-arrow-right"></use></svg></button>
+            </div>
+            <div class="mini-list" id="recent-nodes"></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="view" data-view-panel="nodes" hidden>
+        <div class="page-head">
+          <div>
+            <span class="eyebrow">Nodes</span>
+            <h1>节点管理</h1>
+            <p class="page-sub">添加、编辑或停用节点，保存后会立即写入订阅。</p>
+          </div>
+          <div class="page-actions">
+            <button class="btn btn-secondary" type="button" id="nodes-copy"><svg class="icon"><use href="#i-link"></use></svg>复制订阅链接</button>
+            <button class="btn btn-primary" type="button" id="nodes-add"><svg class="icon"><use href="#i-plus"></use></svg>添加节点</button>
+          </div>
+        </div>
+
+        <div class="toolbar panel">
+          <div class="search-box">
+            <svg class="icon"><use href="#i-search"></use></svg>
+            <input id="node-search" type="search" placeholder="搜索名称、服务器、协议或分组" autocomplete="off" spellcheck="false">
+            <kbd>/</kbd>
+          </div>
+          <div class="toolbar-filters">
+            <div class="select-wrap">
+              <select id="filter-type" aria-label="按协议筛选">
+                <option value="all">全部协议</option>
+                <option value="vless">VLESS</option>
+                <option value="hysteria2">Hysteria2</option>
+                <option value="trojan">Trojan</option>
+                <option value="vmess">VMess</option>
+                <option value="ss">Shadowsocks</option>
+              </select>
+              <svg class="icon"><use href="#i-chevron"></use></svg>
+            </div>
+            <div class="select-wrap">
+              <select id="filter-region" aria-label="按分组筛选">
+                <option value="all">全部分组</option>
+                <option value="us">欧美节点</option>
+                <option value="jp">日韩节点</option>
+                <option value="hk">港台节点</option>
+                <option value="relay">中转节点</option>
+                <option value="other">未分组</option>
+              </select>
+              <svg class="icon"><use href="#i-chevron"></use></svg>
+            </div>
+            <button class="btn btn-quiet btn-sm" type="button" id="filter-reset">重置</button>
+          </div>
+          <span class="toolbar-count" id="node-count-label">共 0 个节点</span>
+        </div>
+
+        <div class="panel table-panel">
+          <div class="node-head">
+            <span>节点</span><span>服务器</span><span>协议</span><span>分组</span><span>状态</span><span class="ta-right">操作</span>
+          </div>
+          <div class="node-list" id="node-list"></div>
+          <div class="empty" id="node-empty" hidden>
+            <span class="empty-art"><svg viewBox="0 0 120 90" fill="none">
+              <rect x="14" y="18" width="92" height="58" rx="12" stroke="currentColor" stroke-width="1.4" opacity=".35"/>
+              <path d="M14 34h92" stroke="currentColor" stroke-width="1.4" opacity=".22"/>
+              <circle cx="24" cy="26" r="2" fill="currentColor" opacity=".35"/><circle cx="31" cy="26" r="2" fill="currentColor" opacity=".2"/>
+              <rect x="26" y="44" width="42" height="5" rx="2.5" fill="currentColor" opacity=".16"/>
+              <rect x="26" y="56" width="28" height="5" rx="2.5" fill="currentColor" opacity=".1"/>
+              <path d="M83 48v16M75 56h16" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity=".45"/>
+            </svg></span>
+            <h3>还没有任何节点</h3>
+            <p>添加第一个节点后，订阅就会开始生成。</p>
+            <button class="btn btn-primary btn-sm" type="button" id="empty-add"><svg class="icon"><use href="#i-plus"></use></svg>添加节点</button>
+          </div>
+          <div class="empty" id="node-empty-filter" hidden>
+            <span class="empty-art"><svg viewBox="0 0 120 90" fill="none">
+              <circle cx="54" cy="42" r="22" stroke="currentColor" stroke-width="1.5" opacity=".35"/>
+              <path d="m70 58 14 14" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity=".35"/>
+              <path d="M46 42h16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" opacity=".25"/>
+            </svg></span>
+            <h3>没有匹配的节点</h3>
+            <p>试试更换关键词或清除筛选条件。</p>
+            <button class="btn btn-secondary btn-sm" type="button" id="empty-reset">清除筛选</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" data-view-panel="preview" hidden>
+        <div class="page-head">
+          <div>
+            <span class="eyebrow">Preview</span>
+            <h1>订阅预览</h1>
+            <p class="page-sub">查看当前配置生成的 Clash YAML，保存节点后会自动刷新。</p>
+          </div>
+          <div class="page-actions">
+            <button class="btn btn-secondary" type="button" id="preview-refresh"><svg class="icon"><use href="#i-refresh"></use></svg>刷新</button>
+            <button class="btn btn-secondary" type="button" id="preview-download"><svg class="icon"><use href="#i-download"></use></svg>下载</button>
+            <button class="btn btn-primary" type="button" id="preview-copy"><svg class="icon"><use href="#i-copy"></use></svg>复制 YAML</button>
+          </div>
+        </div>
+
+        <div class="sub-strip panel">
+          <div class="sub-strip-info">
+            <span class="stat-icon tone-indigo"><svg class="icon"><use href="#i-link"></use></svg></span>
+            <div><strong>订阅地址</strong><span id="preview-sub-url">—</span></div>
+          </div>
+          <button class="btn btn-secondary btn-sm" type="button" id="preview-copy-sub"><svg class="icon"><use href="#i-copy"></use></svg>复制链接</button>
+        </div>
+
+        <div class="panel code-panel">
+          <div class="code-head">
+            <div class="code-file">
+              <span class="file-dots"><i></i><i></i><i></i></span>
+              <span class="mono">subscription.yaml</span>
+              <span class="code-badge">YAML</span>
+            </div>
+            <div class="code-meta"><span id="code-lines">0 行</span><span class="dot-sep"></span><span id="code-size">0 KB</span></div>
+          </div>
+          <div class="code-body">
+            <pre class="code" id="yaml-code"></pre>
+            <div class="code-loading" id="code-loading"><span class="spinner"></span>正在生成订阅…</div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<div class="drawer-layer" id="drawer-layer" hidden>
+  <div class="drawer-backdrop" data-close-drawer></div>
+  <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+    <header class="drawer-head">
+      <div class="drawer-title-wrap">
+        <span class="drawer-icon"><svg class="icon"><use href="#i-server"></use></svg></span>
+        <div><h2 id="drawer-title">添加节点</h2><p id="drawer-sub">配置一个新的代理节点</p></div>
+      </div>
+      <button class="icon-btn" type="button" data-close-drawer aria-label="关闭"><svg class="icon"><use href="#i-close"></use></svg></button>
+    </header>
+
+    <form id="node-form" novalidate>
+      <div class="drawer-body">
+        <section class="form-section">
+          <div class="section-head"><h3>基本信息</h3><p>节点名称会直接显示在客户端节点列表中。</p></div>
+          <div class="field">
+            <label for="f-name">节点名称 <span class="req">*</span></label>
+            <input id="f-name" maxlength="80" placeholder="例如：HK-01 · 香港中转" autocomplete="off" spellcheck="false">
+            <div class="field-error" data-error="name"></div>
+          </div>
+          <div class="field">
+            <label>协议类型 <span class="req">*</span></label>
+            <div class="type-grid" id="type-grid">
+              <button type="button" class="type-card" data-type="vless"><span class="type-mark">VL</span><span>VLESS</span></button>
+              <button type="button" class="type-card" data-type="hysteria2"><span class="type-mark">HY2</span><span>Hysteria2</span></button>
+              <button type="button" class="type-card" data-type="trojan"><span class="type-mark">TR</span><span>Trojan</span></button>
+              <button type="button" class="type-card" data-type="vmess"><span class="type-mark">VM</span><span>VMess</span></button>
+              <button type="button" class="type-card" data-type="ss"><span class="type-mark">SS</span><span>Shadowsocks</span></button>
+            </div>
+          </div>
+          <div class="field">
+            <label for="f-region">所属分组 <span class="req">*</span></label>
+            <div class="select-wrap select-block">
+              <select id="f-region">
+                <option value="hk">🇭🇰 港台节点</option>
+                <option value="jp">🇯🇵 日韩节点</option>
+                <option value="us">🇺🇸 欧美节点</option>
+                <option value="relay">📶 中转节点</option>
+                <option value="other">🌐 仅加入选择列表</option>
+              </select>
+              <svg class="icon"><use href="#i-chevron"></use></svg>
+            </div>
+            <div class="field-hint">分组决定节点在客户端策略组中的默认归属。</div>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label for="f-server">服务器地址 <span class="req">*</span></label>
+              <input id="f-server" placeholder="IP 或域名" autocomplete="off" spellcheck="false">
+              <div class="field-error" data-error="server"></div>
+            </div>
+            <div class="field field-port">
+              <label for="f-port">端口 <span class="req">*</span></label>
+              <input id="f-port" type="number" min="1" max="65535" placeholder="443" inputmode="numeric">
+              <div class="field-error" data-error="port"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="form-section proto-section" id="proto-vless">
+          <div class="section-head"><h3>VLESS 参数</h3><p>支持 Reality、WebSocket 与 gRPC 传输。</p></div>
+          <div class="field">
+            <label for="f-uuid">UUID <span class="req">*</span></label>
+            <div class="input-inline">
+              <input id="f-uuid" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" spellcheck="false" autocomplete="off">
+              <button class="btn btn-quiet btn-sm" type="button" id="gen-uuid"><svg class="icon"><use href="#i-refresh"></use></svg>生成</button>
+            </div>
+            <div class="field-error" data-error="uuid"></div>
+          </div>
+          <div class="field">
+            <label>传输方式</label>
+            <div class="segmented" id="f-network">
+              <button type="button" data-value="tcp">TCP</button>
+              <button type="button" data-value="ws">WebSocket</button>
+              <button type="button" data-value="grpc">gRPC</button>
+            </div>
+          </div>
+          <div class="switch-row">
+            <div class="switch-copy"><b>TLS 加密</b><small>通过 TLS 与 SNI 建立加密连接</small></div>
+            <button type="button" class="switch" id="f-tls" role="switch" aria-checked="true" aria-label="TLS 加密"></button>
+          </div>
+          <div class="switch-row" id="reality-row">
+            <div class="switch-copy"><b>Reality</b><small>使用 Reality 公钥进行无证书伪装</small></div>
+            <button type="button" class="switch" id="f-reality" role="switch" aria-checked="true" aria-label="Reality"></button>
+          </div>
+          <div class="field-row" id="reality-fields">
+            <div class="field">
+              <label for="f-pbk">Reality 公钥 <span class="req">*</span></label>
+              <input id="f-pbk" placeholder="Public Key" spellcheck="false" autocomplete="off">
+              <div class="field-error" data-error="publicKey"></div>
+            </div>
+            <div class="field">
+              <label for="f-sid">Short ID</label>
+              <input id="f-sid" placeholder="Short ID" spellcheck="false" autocomplete="off">
+              <div class="field-error" data-error="shortId"></div>
+            </div>
+          </div>
+          <div class="field-row" id="tls-fields">
+            <div class="field">
+              <label for="f-sni">SNI / 回落域名</label>
+              <input id="f-sni" placeholder="www.example.com" spellcheck="false" autocomplete="off">
+              <div class="field-error" data-error="servername"></div>
+            </div>
+            <div class="field">
+              <label for="f-fp">TLS 指纹</label>
+              <div class="select-wrap select-block">
+                <select id="f-fp">
+                  <option value="chrome">Chrome</option>
+                  <option value="firefox">Firefox</option>
+                  <option value="safari">Safari</option>
+                  <option value="ios">iOS</option>
+                  <option value="android">Android</option>
+                  <option value="edge">Edge</option>
+                  <option value="random">Random</option>
+                  <option value="randomized">Randomized</option>
+                </select>
+                <svg class="icon"><use href="#i-chevron"></use></svg>
+              </div>
+            </div>
+          </div>
+          <div class="field" id="flow-field">
+            <label for="f-flow">Flow</label>
+            <div class="select-wrap select-block">
+              <select id="f-flow">
+                <option value="">不启用</option>
+                <option value="xtls-rprx-vision">xtls-rprx-vision</option>
+              </select>
+              <svg class="icon"><use href="#i-chevron"></use></svg>
+            </div>
+          </div>
+          <div class="field-row" id="ws-fields" hidden>
+            <div class="field">
+              <label for="f-wspath">WS Path</label>
+              <input id="f-wspath" placeholder="/" spellcheck="false" autocomplete="off">
+            </div>
+            <div class="field">
+              <label for="f-wshost">WS Host</label>
+              <input id="f-wshost" placeholder="可留空" spellcheck="false" autocomplete="off">
+              <div class="field-error" data-error="wsHost"></div>
+            </div>
+          </div>
+          <div class="field" id="grpc-fields" hidden>
+            <label for="f-grpc">gRPC 服务名</label>
+            <input id="f-grpc" placeholder="可留空" spellcheck="false" autocomplete="off">
+          </div>
+          <div class="switch-row">
+            <div class="switch-copy"><b>UDP 转发</b><small>允许通过该节点转发 UDP 流量</small></div>
+            <button type="button" class="switch" id="f-udp" role="switch" aria-checked="true" aria-label="UDP 转发"></button>
+          </div>
+        </section>
+
+        <section class="form-section proto-section" id="proto-vmess" hidden>
+          <div class="section-head"><h3>VMess 参数</h3><p>兼容经典 VMess 与 WebSocket 传输。</p></div>
+          <div class="field">
+            <label for="f-vm-uuid">UUID <span class="req">*</span></label>
+            <div class="input-inline">
+              <input id="f-vm-uuid" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" spellcheck="false" autocomplete="off">
+              <button class="btn btn-quiet btn-sm" type="button" id="gen-vm-uuid"><svg class="icon"><use href="#i-refresh"></use></svg>生成</button>
+            </div>
+            <div class="field-error" data-error="vmUuid"></div>
+          </div>
+          <div class="field">
+            <label>传输方式</label>
+            <div class="segmented" id="f-vm-network">
+              <button type="button" data-value="ws">WebSocket</button>
+              <button type="button" data-value="tcp">TCP</button>
+              <button type="button" data-value="grpc">gRPC</button>
+            </div>
+          </div>
+          <div class="switch-row">
+            <div class="switch-copy"><b>TLS 加密</b><small>为传输层启用 TLS</small></div>
+            <button type="button" class="switch" id="f-vm-tls" role="switch" aria-checked="false" aria-label="VMess TLS"></button>
+          </div>
+          <div class="field" id="vm-tls-field" hidden>
+            <label for="f-vm-sni">SNI</label>
+            <input id="f-vm-sni" placeholder="www.example.com" spellcheck="false" autocomplete="off">
+            <div class="field-error" data-error="vmServername"></div>
+          </div>
+          <div class="field-row" id="vm-ws-fields">
+            <div class="field">
+              <label for="f-vm-wspath">WS Path</label>
+              <input id="f-vm-wspath" placeholder="/" spellcheck="false" autocomplete="off">
+            </div>
+            <div class="field">
+              <label for="f-vm-wshost">WS Host</label>
+              <input id="f-vm-wshost" placeholder="可留空" spellcheck="false" autocomplete="off">
+              <div class="field-error" data-error="vmWsHost"></div>
+            </div>
+          </div>
+          <div class="field" id="vm-grpc-fields" hidden>
+            <label for="f-vm-grpc">gRPC 服务名</label>
+            <input id="f-vm-grpc" placeholder="可留空" spellcheck="false" autocomplete="off">
+          </div>
+          <div class="switch-row">
+            <div class="switch-copy"><b>UDP 转发</b><small>允许通过该节点转发 UDP 流量</small></div>
+            <button type="button" class="switch" id="f-vm-udp" role="switch" aria-checked="true" aria-label="VMess UDP"></button>
+          </div>
+        </section>
+
+        <section class="form-section proto-section" id="proto-trojan" hidden>
+          <div class="section-head"><h3>Trojan 参数</h3><p>基于 TLS 的经典 Trojan 协议。</p></div>
+          <div class="field">
+            <label for="f-tr-password">密码 <span class="req">*</span></label>
+            <div class="input-inline">
+              <input id="f-tr-password" type="text" placeholder="节点认证密码" spellcheck="false" autocomplete="off">
+              <button class="btn btn-quiet btn-sm" type="button" id="gen-tr-password"><svg class="icon"><use href="#i-refresh"></use></svg>随机</button>
+            </div>
+            <div class="field-error" data-error="trPassword"></div>
+          </div>
+          <div class="field">
+            <label for="f-tr-sni">SNI</label>
+            <input id="f-tr-sni" placeholder="www.example.com" spellcheck="false" autocomplete="off">
+            <div class="field-error" data-error="trSni"></div>
+          </div>
+          <div class="switch-row">
+            <div class="switch-copy"><b>跳过证书校验</b><small>使用自签证书时建议开启</small></div>
+            <button type="button" class="switch" id="f-tr-skip" role="switch" aria-checked="true" aria-label="跳过证书校验"></button>
+          </div>
+          <div class="switch-row">
+            <div class="switch-copy"><b>UDP 转发</b><small>允许通过该节点转发 UDP 流量</small></div>
+            <button type="button" class="switch" id="f-tr-udp" role="switch" aria-checked="true" aria-label="Trojan UDP"></button>
+          </div>
+        </section>
+
+        <section class="form-section proto-section" id="proto-hysteria2" hidden>
+          <div class="section-head"><h3>Hysteria2 参数</h3><p>基于 QUIC 的高速传输，适合高延迟网络。</p></div>
+          <div class="field">
+            <label for="f-hy-password">密码 <span class="req">*</span></label>
+            <div class="input-inline">
+              <input id="f-hy-password" type="text" placeholder="节点认证密码" spellcheck="false" autocomplete="off">
+              <button class="btn btn-quiet btn-sm" type="button" id="gen-hy-password"><svg class="icon"><use href="#i-refresh"></use></svg>随机</button>
+            </div>
+            <div class="field-error" data-error="hyPassword"></div>
+          </div>
+          <div class="field">
+            <label for="f-hy-sni">SNI</label>
+            <input id="f-hy-sni" placeholder="bing.com" spellcheck="false" autocomplete="off">
+            <div class="field-error" data-error="hySni"></div>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label for="f-hy-up">上行带宽</label>
+              <input id="f-hy-up" placeholder="80 mbps" spellcheck="false" autocomplete="off">
+              <div class="field-error" data-error="hyUp"></div>
+            </div>
+            <div class="field">
+              <label for="f-hy-down">下行带宽</label>
+              <input id="f-hy-down" placeholder="500 mbps" spellcheck="false" autocomplete="off">
+              <div class="field-error" data-error="hyDown"></div>
+            </div>
+          </div>
+          <div class="switch-row">
+            <div class="switch-copy"><b>跳过证书校验</b><small>使用自签证书时建议开启</small></div>
+            <button type="button" class="switch" id="f-hy-skip" role="switch" aria-checked="true" aria-label="跳过证书校验"></button>
+          </div>
+        </section>
+
+        <section class="form-section proto-section" id="proto-ss" hidden>
+          <div class="section-head"><h3>Shadowsocks 参数</h3><p>轻量、兼容性好的经典加密代理。</p></div>
+          <div class="field">
+            <label for="f-ss-cipher">加密方式</label>
+            <div class="select-wrap select-block">
+              <select id="f-ss-cipher">
+                <option value="aes-256-gcm">aes-256-gcm</option>
+                <option value="aes-128-gcm">aes-128-gcm</option>
+                <option value="chacha20-ietf-poly1305">chacha20-ietf-poly1305</option>
+                <option value="xchacha20-ietf-poly1305">xchacha20-ietf-poly1305</option>
+              </select>
+              <svg class="icon"><use href="#i-chevron"></use></svg>
+            </div>
+          </div>
+          <div class="field">
+            <label for="f-ss-password">密码 <span class="req">*</span></label>
+            <div class="input-inline">
+              <input id="f-ss-password" type="text" placeholder="节点认证密码" spellcheck="false" autocomplete="off">
+              <button class="btn btn-quiet btn-sm" type="button" id="gen-ss-password"><svg class="icon"><use href="#i-refresh"></use></svg>随机</button>
+            </div>
+            <div class="field-error" data-error="ssPassword"></div>
+          </div>
+          <div class="switch-row">
+            <div class="switch-copy"><b>UDP 转发</b><small>允许通过该节点转发 UDP 流量</small></div>
+            <button type="button" class="switch" id="f-ss-udp" role="switch" aria-checked="true" aria-label="Shadowsocks UDP"></button>
+          </div>
+        </section>
+
+        <section class="form-section">
+          <div class="section-head"><h3>应用策略</h3><p>勾选后，节点会额外加入对应的应用策略组。</p></div>
+          <div class="chip-grid" id="tag-grid">
+            <label class="tag-chip"><input type="checkbox" value="chatgpt"><span>💬 ChatGPT</span></label>
+            <label class="tag-chip"><input type="checkbox" value="google"><span>Ⓖ Google</span></label>
+            <label class="tag-chip"><input type="checkbox" value="youtube"><span>📺 YouTube</span></label>
+            <label class="tag-chip"><input type="checkbox" value="telegram"><span>📲 Telegram</span></label>
+          </div>
+        </section>
+
+        <section class="form-section">
+          <div class="switch-row switch-row-last">
+            <div class="switch-copy"><b>启用此节点</b><small>停用后节点不会出现在订阅中，但配置会保留。</small></div>
+            <button type="button" class="switch" id="f-enabled" role="switch" aria-checked="true" aria-label="启用节点"></button>
+          </div>
+        </section>
+        <div class="form-error form-error-block" id="form-global-error" hidden></div>
+      </div>
+      <footer class="drawer-foot">
+        <span class="kbd-hint"><kbd>esc</kbd> 取消<span>·</span><kbd>⌘</kbd><kbd>S</kbd> 保存</span>
+        <div class="drawer-foot-actions">
+          <button class="btn btn-secondary" type="button" data-close-drawer>取消</button>
+          <button class="btn btn-primary" type="submit" id="node-save"><span class="spinner" hidden></span><span class="btn-label">保存节点</span></button>
+        </div>
+      </footer>
+    </form>
+  </aside>
+</div>
+
+<div class="modal-layer" id="confirm-layer" hidden>
+  <div class="modal-backdrop" data-close-modal="confirm"></div>
+  <div class="modal" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title">
+    <span class="modal-icon tone-rose"><svg class="icon"><use href="#i-trash"></use></svg></span>
+    <h2 id="confirm-title">删除这个节点？</h2>
+    <p>即将删除 <strong id="confirm-name">—</strong>，该操作会立即写入订阅且无法撤销。</p>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" type="button" data-close-modal="confirm">取消</button>
+      <button class="btn btn-danger" type="button" id="confirm-delete">删除节点</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-layer" id="kv-layer" hidden>
+  <div class="modal-backdrop" data-close-modal="kv"></div>
+  <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="kv-title">
+    <span class="modal-icon tone-indigo"><svg class="icon"><use href="#i-database"></use></svg></span>
+    <h2 id="kv-title">绑定 KV 存储</h2>
+    <p class="modal-sub">管理操作需要持久化配置。项目已内置自动绑定，通常无需任何手动步骤。</p>
+    <ol class="steps">
+      <li><span class="step-no">1</span><div><b>确认 wrangler.toml 中的绑定声明</b><p>仓库内 <code>wrangler.toml</code> 已声明 <code>[[kv_namespaces]]</code>，绑定名固定为 <code>SUB_KV</code>，且不写 <code>id</code>。</p></div></li>
+      <li><span class="step-no">2</span><div><b>重新部署即可自动创建并绑定</b><p>Cloudflare 连接 GitHub 后，每次推送都会执行 <code>wrangler deploy</code>，此时 Wrangler 会自动创建（或复用）KV 命名空间并完成绑定。</p></div></li>
+      <li><span class="step-no">3</span><div><b>若仍提示未绑定</b><p>在「存储和数据库 → KV」手动创建一个命名空间，把它的 ID 填到 <code>wrangler.toml</code> 的 <code>id</code> 字段后重新部署。</p></div></li>
+    </ol>
+    <div class="modal-note"><svg class="icon"><use href="#i-info"></use></svg><span>KV 绑定成功后，首次访问会自动写入一份空配置，之后所有节点都由你在控制台维护。</span></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" type="button" data-close-modal="kv">稍后处理</button>
+      <button class="btn btn-primary" type="button" id="kv-copy-name"><svg class="icon"><use href="#i-copy"></use></svg>复制变量名</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-stack" id="toasts" role="status" aria-live="polite"></div>
+
+<script nonce="__CSP_NONCE__">/*__JS__*/</script>
+</body>
+</html>

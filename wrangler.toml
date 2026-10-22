@@ -1,0 +1,27 @@
+#:schema node_modules/wrangler/config-schema.json
+
+name = "transit-hub"
+main = "dist/1.js"
+compatibility_date = "2025-09-01"
+workers_dev = true
+
+# ---------------------------------------------------------------------------
+# KV 绑定（自动创建 + 自动绑定）
+#
+# 这里只声明 binding，故意不写 id：
+#   - `wrangler deploy` 会自动创建一个 KV 命名空间并写回绑定；
+#   - 已存在同名命名空间时自动复用，不会重复创建。
+# Cloudflare Workers Builds 连接 GitHub 后，每次 push 都会执行 wrangler deploy，
+# 因此首次部署即可自动完成 KV 创建与绑定，无需手动到控制台点按钮。
+#
+# 如果你使用的 wrangler 版本不支持自动预置，把下面手动创建的命名空间 ID 填进 id 即可：
+#   npx wrangler kv namespace create SUB_KV
+#   [[kv_namespaces]]
+#   binding = "SUB_KV"
+#   id = "<上一步输出的 id>"
+# ---------------------------------------------------------------------------
+[[kv_namespaces]]
+binding = "SUB_KV"
+
+[observability]
+enabled = true
