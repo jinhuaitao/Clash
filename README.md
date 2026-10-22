@@ -13,6 +13,7 @@
 - **节点排序**：节点管理页用 ↑ ↓ 调整节点顺序；未筛选时调整全局顺序，按分组筛选后只调整该分组内的独立顺序，不影响其他分组与 🌍选择节点。
 - **🌍 选择节点显示开关**：添加/编辑节点时可关闭「在🌍选择节点中显示」，该节点仍保留在所属分组与应用策略组中，只是不再列入全局选择列表。
 - **参数预设**：控制台新增「参数预设」页，可设置固定的 UUID、Reality 公钥、Short ID、SNI / 回落域名；新建 VLESS 节点时自动填入，不用每次重复粘贴。
+- **备份与恢复**：节点管理页可一键导出 JSON 备份（含节点、参数预设、分组排序），换设备或误删后可导入恢复，导入前有二次确认。
 - **协议支持**：VLESS（Reality / WS / gRPC）、Hysteria2、Trojan、VMess、Shadowsocks。
 - **策略组自动编排**：按分组（欧美 / 日韩 / 港台 / 中转）自动生成策略组，并自动挂载 ChatGPT / Google / YouTube / Telegram 应用分流组。
 - **伪装的访客页面**：未携带正确令牌访问根路径时，返回一个普通的「IP 地址查询」页面，不暴露服务性质。
@@ -195,3 +196,5 @@ node build.mjs && node test/worker.test.mjs # 20 项接口/安全测试
 - `ADMIN_TOKEN` 与 `AUTH_TOKEN` 分开设置更安全：`AUTH_TOKEN` 会出现在订阅 URL 里，可能被客户端或日志记录。
 - 订阅接口返回 `access-control-allow-origin: *` 以便各类客户端拉取；令牌即凭据，泄露后请立刻更换 Secret 并重新部署。
 - 控制台页面带 CSP（`script-src 'nonce-…'`、`frame-ancestors 'none'`）与 `noindex`，不会进入搜索引擎。
+- 管理接口（`/api/*`）内置轻量限流：同一出口 IP 每分钟最多 120 次请求，超限返回 `429` + `Retry-After`。Worker 内存按 isolate 隔离，这是尽力而为的防护；如需严格限流，可在 Cloudflare 控制台为该 Worker 添加边缘 Rate Limiting 规则（路径匹配 `/api/*`，建议阈值 60 次/分钟），与内置限流叠加生效。
+- 定期用「导出备份」保存一份 JSON 到本地：KV 数据只存在云端，误删或账号异常时可凭备份恢复。
