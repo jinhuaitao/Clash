@@ -4,7 +4,7 @@ export default {
   },
 }
 
-const VERSION = '2.1.0'
+const VERSION = '2.2.0'
 const CONFIG_KEY = 'config'
 const MAX_NODES = 300
 const MAX_BODY = 256 * 1024
@@ -155,7 +155,18 @@ function kvBinding(env) {
 }
 
 function emptyConfig() {
-  return { v: 1, rev: 0, updatedAt: null, nodes: [] }
+  return { v: 1, rev: 0, updatedAt: null, nodes: [], defaults: {} }
+}
+
+function sanitizeDefaults(input) {
+  const out = {}
+  if (!input || typeof input !== 'object') return out
+  const text = value => (typeof value === 'string' ? value.trim() : '')
+  if (text(input.vlessUuid)) out.vlessUuid = text(input.vlessUuid)
+  if (text(input.vlessPublicKey)) out.vlessPublicKey = text(input.vlessPublicKey)
+  if (text(input.vlessShortId)) out.vlessShortId = text(input.vlessShortId)
+  if (text(input.vlessServername)) out.vlessServername = text(input.vlessServername)
+  return out
 }
 
 async function readConfig(env) {
@@ -192,6 +203,7 @@ async function readConfig(env) {
         rev: Number.isFinite(parsed.rev) ? parsed.rev : 1,
         updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : null,
         nodes: parsed.nodes,
+        defaults: sanitizeDefaults(parsed.defaults),
       },
       readonly: false,
       corrupted: false,
@@ -268,6 +280,24 @@ function bandwidthValue(value, field, label) {
   return `${match[1]} ${match[2].toLowerCase()}`
 }
 
+function validateDefaults(input) {
+  const cleaned = sanitizeDefaults(input)
+  if (cleaned.vlessUuid && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleaned.vlessUuid)) {
+    throw new HttpError(400, '预设 UUID 格式不正确', 'defaults.vlessUuid')
+  }
+  if (cleaned.vlessPublicKey && cleaned.vlessPublicKey.length > 128) {
+    throw new HttpError(400, '预设 Reality 公钥不能超过 128 个字符', 'defaults.vlessPublicKey')
+  }
+  if (cleaned.vlessShortId && cleaned.vlessShortId.length > 32) {
+    throw new HttpError(400, '预设 Reality Short ID 不能超过 32 个字符', 'defaults.vlessShortId')
+  }
+  if (cleaned.vlessServername) {
+    const sni = hostValue(cleaned.vlessServername, 'defaults.vlessServername', '预设 SNI / 回落域名')
+    cleaned.vlessServername = sni
+  }
+  return cleaned
+}
+
 function validateNodes(input) {
   if (!Array.isArray(input)) throw new HttpError(400, '节点数据格式不正确')
   if (input.length > MAX_NODES) throw new HttpError(400, `节点数量不能超过 ${MAX_NODES} 个`)
@@ -300,12 +330,13 @@ function validateNodes(input) {
       ? [...new Set(raw.tags.filter(tag => TAGS.includes(tag)))]
       : []
     const enabled = raw.enabled !== false
+    const showInMain = raw.showInMain !== false
 
     let id = typeof raw.id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(raw.id) ? raw.id : ''
     if (!id || ids.has(id)) id = 'n_' + crypto.randomUUID()
     ids.add(id)
 
-    const node = { id, name, type, server, port, region, enabled, tags }
+    const node = { id, name, type, server, port, region, enabled, showInMain, tags }
 
     if (type === 'vless') {
       const uuid = requireString(raw.uuid, 'uuid', 'UUID', 64)
@@ -445,11 +476,15 @@ async function apiSave(request, url, env) {
   }
 
   const nodes = validateNodes(body.nodes)
+  const defaults = body.defaults !== undefined
+    ? validateDefaults(body.defaults)
+    : sanitizeDefaults(current.config.defaults)
   const next = {
     v: 1,
     rev: (current.config.rev || 0) + 1,
     updatedAt: new Date().toISOString(),
     nodes,
+    defaults,
   }
   await writeConfig(env, next)
 
@@ -669,7 +704,11 @@ function buildProxyGroups(config) {
     }
   })
 
-  const mainProxies = ['DIRECT', ...buckets.map(bucket => bucket.name), ...enabled.map(node => node.name)]
+  const mainProxies = [
+    'DIRECT',
+    ...buckets.map(bucket => bucket.name),
+    ...enabled.filter(node => node.showInMain !== false).map(node => node.name),
+  ]
   const groups = [{
     name: MAIN_GROUP,
     icon: 'https://fastly.jsdelivr.net/gh/Koolson/Qure/IconSet/Color/Global.png',
