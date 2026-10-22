@@ -155,7 +155,7 @@ function kvBinding(env) {
 }
 
 function emptyConfig() {
-  return { v: 1, rev: 0, updatedAt: null, nodes: [], defaults: {} }
+  return { v: 1, rev: 0, updatedAt: null, nodes: [], defaults: {}, regionOrder: {} }
 }
 
 function sanitizeDefaults(input) {
@@ -204,6 +204,7 @@ async function readConfig(env) {
         updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : null,
         nodes: parsed.nodes,
         defaults: sanitizeDefaults(parsed.defaults),
+        regionOrder: reconcileRegionOrder(parsed.regionOrder, parsed.nodes),
       },
       readonly: false,
       corrupted: false,
@@ -278,6 +279,56 @@ function bandwidthValue(value, field, label) {
   const match = text.match(/^(\d{1,6}(?:\.\d{1,2})?)\s*(kbps|mbps|gbps)$/i)
   if (!match) throw new HttpError(400, `${label}格式应为 80 mbps`, field)
   return `${match[1]} ${match[2].toLowerCase()}`
+}
+
+const GROUP_REGIONS = ['us', 'jp', 'hk', 'relay']
+
+function sanitizeRegionOrder(input) {
+  const out = {}
+  if (!input || typeof input !== 'object') return out
+  GROUP_REGIONS.forEach(region => {
+    const arr = input[region]
+    if (!Array.isArray(arr)) return
+    const seen = new Set()
+    const clean = []
+    arr.forEach(id => {
+      if (typeof id === 'string' && id && !seen.has(id)) {
+        seen.add(id)
+        clean.push(id)
+      }
+    })
+    if (clean.length) out[region] = clean
+  })
+  return out
+}
+
+// 按当前节点名单整理分组顺序：剔除已删除/已换组 id，未收录的本组节点按全局顺序追加到末尾
+function reconcileRegionOrder(stored, nodes) {
+  const clean = sanitizeRegionOrder(stored)
+  const byRegion = { us: [], jp: [], hk: [], relay: [] }
+  nodes.forEach(node => {
+    if (node && byRegion[node.region]) byRegion[node.region].push(node.id)
+  })
+  const out = {}
+  GROUP_REGIONS.forEach(region => {
+    const members = new Set(byRegion[region])
+    const seen = new Set()
+    const arr = []
+    ;(clean[region] || []).forEach(id => {
+      if (members.has(id) && !seen.has(id)) {
+        seen.add(id)
+        arr.push(id)
+      }
+    })
+    byRegion[region].forEach(id => {
+      if (!seen.has(id)) {
+        seen.add(id)
+        arr.push(id)
+      }
+    })
+    if (arr.length) out[region] = arr
+  })
+  return out
 }
 
 function validateDefaults(input) {
@@ -479,12 +530,17 @@ async function apiSave(request, url, env) {
   const defaults = body.defaults !== undefined
     ? validateDefaults(body.defaults)
     : sanitizeDefaults(current.config.defaults)
+  const regionOrder = reconcileRegionOrder(
+    body.regionOrder !== undefined ? body.regionOrder : current.config.regionOrder,
+    nodes
+  )
   const next = {
     v: 1,
     rev: (current.config.rev || 0) + 1,
     updatedAt: new Date().toISOString(),
     nodes,
     defaults,
+    regionOrder,
   }
   await writeConfig(env, next)
 
@@ -698,8 +754,19 @@ function buildProxyGroups(config) {
   const buckets = []
 
   REGION_ORDER.forEach(key => {
-    const members = enabled.filter(node => node.region === key).map(node => node.name)
-    if (members.length) {
+    const inRegion = enabled.filter(node => node.region === key)
+    if (inRegion.length) {
+      // 各分组按独立的 regionOrder 排序，未收录的节点保持全局相对顺序（sort 稳定）
+      const rank = new Map((((config.regionOrder || {})[key]) || []).map((id, i) => [id, i]))
+      const far = Number.MAX_SAFE_INTEGER
+      const members = inRegion
+        .slice()
+        .sort((a, b) => {
+          const ra = rank.has(a.id) ? rank.get(a.id) : far
+          const rb = rank.has(b.id) ? rank.get(b.id) : far
+          return ra - rb
+        })
+        .map(node => node.name)
       buckets.push({ key, name: REGION_META[key].group, icon: REGION_META[key].icon, members })
     }
   })
