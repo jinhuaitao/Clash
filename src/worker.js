@@ -83,9 +83,13 @@ async function handleRequest(request, env) {
 
   try {
     if (path === '/api/config' || path === '/api/preview') {
+      const limited = checkApiRateLimit(request)
+      if (limited) return limited
       return await handleApi(request, url, path, env)
     }
     if (path.startsWith('/api/')) {
+      const limited = checkApiRateLimit(request)
+      if (limited) return limited
       return json({ error: '接口不存在' }, 404)
     }
     if (request.method !== 'GET' && request.method !== 'HEAD') {
@@ -564,15 +568,51 @@ function buildMeta(url, result, env) {
   }
 }
 
-function json(data, status = 200) {
+function json(data, status = 200, extraHeaders) {
   return new Response(JSON.stringify(data), {
     status,
     headers: {
       ...baseHeaders(),
       'content-type': 'application/json;charset=UTF-8',
       'cache-control': 'no-store',
+      ...(extraHeaders || {}),
     },
   })
+}
+
+/* ------------------------------------------------------------------ */
+/* rate limiting (best-effort, per-isolate)                             */
+/*                                                                     */
+/* 给管理接口加一层轻量限流：同一出口 IP 每分钟最多 120 次 /api 请求， */
+/* 超过返回 429 + Retry-After。Worker 内存是按 isolate 隔离的，       */
+/* 因此这是尽力而为的防护；如需严格限流，请在 Cloudflare 控制台       */
+/* 为 /api/* 配置边缘 Rate Limiting 规则（见 README）。               */
+/* ------------------------------------------------------------------ */
+
+const API_RATE_WINDOW_MS = 60 * 1000
+const API_RATE_MAX = 120
+const apiRateBuckets = new Map()
+
+function checkApiRateLimit(request) {
+  const ip = request.headers.get('cf-connecting-ip') || 'unknown'
+  const now = Date.now()
+  let bucket = apiRateBuckets.get(ip)
+  if (!bucket || now - bucket.start >= API_RATE_WINDOW_MS) {
+    bucket = { start: now, count: 0 }
+    apiRateBuckets.set(ip, bucket)
+  }
+  if (apiRateBuckets.size > 2000) {
+    for (const [key, value] of apiRateBuckets) {
+      if (now - value.start >= API_RATE_WINDOW_MS) apiRateBuckets.delete(key)
+      if (apiRateBuckets.size <= 1000) break
+    }
+  }
+  bucket.count += 1
+  if (bucket.count > API_RATE_MAX) {
+    const retryAfter = Math.max(1, Math.ceil((API_RATE_WINDOW_MS - (now - bucket.start)) / 1000))
+    return json({ error: '请求过于频繁，请稍后再试' }, 429, { 'retry-after': String(retryAfter) })
+  }
+  return null
 }
 
 function baseHeaders() {
