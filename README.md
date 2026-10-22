@@ -10,7 +10,7 @@
 
 - **订阅输出**：`GET /?token=<AUTH_TOKEN>` 返回 Clash / Mihomo 可直接使用的 YAML，带 `subscription-userinfo` 与 `profile-update-interval` 响应头。
 - **管理控制台**：`/admin`，令牌登录，支持节点增删改、启用/停用、一键复制、协议筛选、订阅实时预览与下载。
-- **节点排序**：节点管理页用 ↑ ↓ 调整节点顺序，顺序会直接反映到订阅 YAML 与策略组中。
+- **节点排序**：节点管理页用 ↑ ↓ 调整节点顺序；未筛选时调整全局顺序，按分组筛选后只调整该分组内的独立顺序，不影响其他分组与 🌍选择节点。
 - **🌍 选择节点显示开关**：添加/编辑节点时可关闭「在🌍选择节点中显示」，该节点仍保留在所属分组与应用策略组中，只是不再列入全局选择列表。
 - **参数预设**：控制台新增「参数预设」页，可设置固定的 UUID、Reality 公钥、Short ID、SNI / 回落域名；新建 VLESS 节点时自动填入，不用每次重复粘贴。
 - **协议支持**：VLESS（Reality / WS / gRPC）、Hysteria2、Trojan、VMess、Shadowsocks。
@@ -158,6 +158,9 @@ node build.mjs && node test/worker.test.mjs # 20 项接口/安全测试
     "vlessPublicKey": "…",
     "vlessShortId": "…",
     "vlessServername": "…"
+  },
+  "regionOrder": {
+    "hk": ["n_xxx", "n_yyy"]
   },
   "nodes": [
     {
