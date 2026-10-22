@@ -762,22 +762,28 @@
     });
   }
 
-  function renderNodeList() {
-    if (!state.config) return;
-    var all = nodes();
-    var query = state.query.trim().toLowerCase();
-    var filtered = filteredNodes();
-    // 按分组筛选时，列表按该分组的独立顺序展示
-    if (!query && isGroupRegion(state.filterRegion)) {
+  // 当前列表视图：筛选 +（按分组筛选时）该分组的独立顺序。
+  // 列表渲染与排序移动必须共用同一顺序，否则换错邻居导致乱序。
+  function viewNodes() {
+    var list = filteredNodes();
+    if (!state.query.trim() && isGroupRegion(state.filterRegion)) {
       var rank = {};
       orderedRegionIds(state.filterRegion).forEach(function (id, i) { rank[id] = i; });
       var far = 1e9;
-      filtered.sort(function (a, b) {
+      list.sort(function (a, b) {
         var ra = rank[a.id] === undefined ? far : rank[a.id];
         var rb = rank[b.id] === undefined ? far : rank[b.id];
         return ra - rb;
       });
     }
+    return list;
+  }
+
+  function renderNodeList() {
+    if (!state.config) return;
+    var all = nodes();
+    var query = state.query.trim().toLowerCase();
+    var filtered = viewNodes();
 
     el.nodeCountLabel.textContent = query || state.filterType !== 'all' || state.filterRegion !== 'all'
       ? filtered.length + ' / ' + all.length + ' 个节点'
@@ -841,7 +847,7 @@
 
   async function moveNode(id, dir, button) {
     if (!ensureWritable() || state.mutating) return;
-    var view = filteredNodes();
+    var view = viewNodes();
     var viewIndex = view.findIndex(function (node) { return node.id === id; });
     var viewTarget = viewIndex + dir;
     if (viewIndex < 0 || viewTarget < 0 || viewTarget >= view.length) return;
