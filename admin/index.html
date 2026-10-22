@@ -65,6 +65,9 @@
     <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 4.5 6v5.5c0 4.7 3.2 8 7.5 9.5 4.3-1.5 7.5-4.8 7.5-9.5V6L12 3Z"/><path d="m8.8 12 2.2 2.2 4.2-4.4"/></symbol>
     <symbol id="i-route" viewBox="0 0 24 24"><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M8.5 17.5H14a4 4 0 0 0 0-8H9"/></symbol>
     <symbol id="i-clipboard" viewBox="0 0 24 24"><rect x="5" y="4.5" width="14" height="16" rx="2.5"/><path d="M9 4.5V3.8A1.8 1.8 0 0 1 10.8 2h2.4A1.8 1.8 0 0 1 15 3.8v.7H9Z"/><path d="M9 11h6M9 15h4"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h9M17.5 7H20M4 17h3M11.5 17H20"/><circle cx="15" cy="7" r="2.2"/><circle cx="9" cy="17" r="2.2"/></symbol>
+    <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol>
+    <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></symbol>
   </defs>
 </svg>
 
@@ -171,6 +174,9 @@
       </button>
       <button class="nav-item" type="button" data-view="preview">
         <svg class="icon"><use href="#i-code"></use></svg><span class="nav-text">订阅预览</span>
+      </button>
+      <button class="nav-item" type="button" data-view="settings">
+        <svg class="icon"><use href="#i-sliders"></use></svg><span class="nav-text">参数预设</span>
       </button>
     </nav>
     <div class="side-foot">
@@ -370,7 +376,7 @@
           <div>
             <span class="eyebrow">Nodes</span>
             <h1>节点管理</h1>
-            <p class="page-sub">添加、编辑或停用节点，保存后会立即写入订阅。</p>
+            <p class="page-sub">添加、编辑或停用节点，保存后会立即写入订阅；用 ↑ ↓ 可调整节点在订阅中的顺序（搜索或筛选时不可用）。</p>
           </div>
           <div class="page-actions">
             <button class="btn btn-secondary" type="button" id="nodes-copy"><svg class="icon"><use href="#i-link"></use></svg>复制订阅链接</button>
@@ -479,6 +485,54 @@
             <div class="code-loading" id="code-loading"><span class="spinner"></span>正在生成订阅…</div>
           </div>
         </div>
+      </section>
+
+      <section class="view" data-view-panel="settings" hidden>
+        <div class="page-head">
+          <div>
+            <span class="eyebrow">Presets</span>
+            <h1>参数预设</h1>
+            <p class="page-sub">为常用 VLESS 参数设置固定值，新建节点时会自动填入，不用每次重复粘贴。</p>
+          </div>
+        </div>
+
+        <form id="settings-form" novalidate>
+          <section class="panel settings-panel">
+            <div class="section-head"><h3>VLESS 默认参数</h3><p>仅在「添加节点」时作为初始值填入；已存在的节点不受影响，仍可逐个单独修改。</p></div>
+            <div class="field">
+              <label for="set-uuid">固定 UUID</label>
+              <div class="input-inline">
+                <input id="set-uuid" placeholder="留空则每次新建随机生成" spellcheck="false" autocomplete="off">
+                <button class="btn btn-quiet btn-sm" type="button" id="gen-set-uuid"><svg class="icon"><use href="#i-refresh"></use></svg>生成</button>
+              </div>
+              <div class="field-error" data-error="setUuid"></div>
+              <div class="field-hint">多个节点共用同一 UUID（通常是同一台服务器）时填在这里。</div>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label for="set-pbk">Reality 公钥</label>
+                <input id="set-pbk" placeholder="Public Key" spellcheck="false" autocomplete="off">
+                <div class="field-error" data-error="setPbk"></div>
+              </div>
+              <div class="field">
+                <label for="set-sid">Reality Short ID</label>
+                <input id="set-sid" placeholder="Short ID" spellcheck="false" autocomplete="off">
+                <div class="field-error" data-error="setSid"></div>
+              </div>
+            </div>
+            <div class="field">
+              <label for="set-sni">SNI / 回落域名</label>
+              <input id="set-sni" placeholder="www.example.com" spellcheck="false" autocomplete="off">
+              <div class="field-error" data-error="setSni"></div>
+              <div class="field-hint">新建 VLESS 节点时，UUID、公钥、Short ID、SNI 会自动填入这些值。</div>
+            </div>
+            <div class="form-error form-error-block" id="settings-global-error" hidden></div>
+            <div class="settings-foot">
+              <button class="btn btn-primary" type="submit" id="settings-save"><span class="spinner" hidden></span><span class="btn-label">保存预设</span></button>
+              <button class="btn btn-quiet" type="button" id="settings-clear">清空预设</button>
+            </div>
+          </section>
+        </form>
       </section>
     </main>
   </div>
@@ -779,6 +833,10 @@
         </section>
 
         <section class="form-section">
+          <div class="switch-row">
+            <div class="switch-copy"><b>在「🌍选择节点」中显示</b><small>关闭后，该节点仍会出现在所属分组与应用策略组中，但不会列入全局选择列表。</small></div>
+            <button type="button" class="switch" id="f-show-main" role="switch" aria-checked="true" aria-label="在选择节点中显示"></button>
+          </div>
           <div class="switch-row switch-row-last">
             <div class="switch-copy"><b>启用此节点</b><small>停用后节点不会出现在订阅中，但配置会保留。</small></div>
             <button type="button" class="switch" id="f-enabled" role="switch" aria-checked="true" aria-label="启用节点"></button>

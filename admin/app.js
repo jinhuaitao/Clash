@@ -46,7 +46,8 @@
   var VIEW_META = {
     overview: '概览',
     nodes: '节点管理',
-    preview: '订阅预览'
+    preview: '订阅预览',
+    settings: '参数预设'
   };
 
   var state = {
@@ -330,6 +331,18 @@
     el.fieldServer = $('#f-server');
     el.fieldPort = $('#f-port');
     el.fieldEnabled = $('#f-enabled');
+    el.fieldShowMain = $('#f-show-main');
+
+    el.settingsForm = $('#settings-form');
+    el.setUuid = $('#set-uuid');
+    el.setPbk = $('#set-pbk');
+    el.setSid = $('#set-sid');
+    el.setSni = $('#set-sni');
+    el.settingsSave = $('#settings-save');
+    el.settingsSaveLabel = $('.btn-label', el.settingsSave);
+    el.settingsSaveSpinner = $('.spinner', el.settingsSave);
+    el.settingsGlobalError = $('#settings-global-error');
+    el.settingsClear = $('#settings-clear');
 
     el.fieldUuid = $('#f-uuid');
     el.fieldTls = $('#f-tls');
@@ -729,10 +742,13 @@
     el.nodeEmptyFilter.hidden = !(all.length > 0 && filtered.length === 0);
     el.nodeList.hidden = filtered.length === 0;
 
-    el.nodeList.innerHTML = filtered.map(renderNodeRow).join('');
+    var sortable = !query && state.filterType === 'all' && state.filterRegion === 'all';
+    el.nodeList.innerHTML = filtered.map(function (node, index) {
+      return renderNodeRow(node, index, filtered.length, sortable);
+    }).join('');
   }
 
-  function renderNodeRow(node) {
+  function renderNodeRow(node, index, total, sortable) {
     var region = REGION_META[node.region] || REGION_META.other;
     var type = TYPE_META[node.type] || { label: node.type };
     var tags = (node.tags || []).filter(function (tag) { return TAG_META[tag]; });
@@ -742,11 +758,22 @@
       }).join('') + '</div>'
       : '';
 
+    var badges = '';
+    if (!node.enabled) badges += '<span class="mini-badge">已停用</span>';
+    if (node.showInMain === false) badges += '<span class="mini-badge">不入🌍</span>';
+
+    var moveHtml = '';
+    if (sortable) {
+      moveHtml =
+        '<button class="icon-btn move-btn" type="button" data-move-id="' + esc(node.id) + '" data-dir="-1" title="上移" aria-label="上移节点"' + (index === 0 ? ' disabled' : '') + '>' + icon('arrow-up') + '</button>' +
+        '<button class="icon-btn move-btn" type="button" data-move-id="' + esc(node.id) + '" data-dir="1" title="下移" aria-label="下移节点"' + (index === total - 1 ? ' disabled' : '') + '>' + icon('arrow-down') + '</button>';
+    }
+
     return '<div class="node-row' + (node.enabled ? '' : ' is-disabled') + '" data-id="' + esc(node.id) + '" tabindex="0" role="button" aria-label="编辑节点 ' + esc(node.name) + '">' +
       '<div class="cell cell-node">' +
         '<span class="node-avatar avatar-' + esc(node.region) + '">' + region.flag + '</span>' +
         '<div class="node-main">' +
-          '<div class="node-name"><span>' + esc(node.name) + '</span>' + (node.enabled ? '' : '<span class="mini-badge">已停用</span>') + '</div>' +
+          '<div class="node-name"><span>' + esc(node.name) + '</span>' + badges + '</div>' +
           tagHtml +
         '</div>' +
       '</div>' +
@@ -758,11 +785,29 @@
       '<div class="cell cell-region"><span class="region-chip">' + region.flag + ' ' + esc(region.short) + '</span></div>' +
       '<div class="cell cell-status"><button class="switch" type="button" role="switch" data-toggle-id="' + esc(node.id) + '" aria-checked="' + (node.enabled ? 'true' : 'false') + '" aria-label="' + (node.enabled ? '停用节点' : '启用节点') + '"></button></div>' +
       '<div class="cell cell-actions">' +
+        moveHtml +
         '<button class="icon-btn" type="button" data-edit-id="' + esc(node.id) + '" title="编辑" aria-label="编辑节点">' + icon('pen') + '</button>' +
         '<button class="icon-btn" type="button" data-dup-id="' + esc(node.id) + '" title="创建副本" aria-label="创建节点副本">' + icon('copy') + '</button>' +
         '<button class="icon-btn danger" type="button" data-del-id="' + esc(node.id) + '" title="删除" aria-label="删除节点">' + icon('trash') + '</button>' +
       '</div>' +
     '</div>';
+  }
+
+  async function moveNode(id, dir, button) {
+    if (!ensureWritable() || state.mutating) return;
+    var list = nodes();
+    var index = list.findIndex(function (node) { return node.id === id; });
+    var target = index + dir;
+    if (index < 0 || target < 0 || target >= list.length) return;
+    setRowBusy(button, true);
+    var nextNodes = list.slice();
+    var moved = nextNodes.splice(index, 1)[0];
+    nextNodes.splice(target, 0, moved);
+    var ok = await saveNodes(nextNodes, {
+      successMessage: dir < 0 ? '节点已上移' : '节点已下移',
+      rerenderOnError: true
+    });
+    if (!ok && button) button.disabled = false;
   }
 
   function switchView(view) {
@@ -778,7 +823,158 @@
     if (view === 'preview' && (!state.preview || state.previewDirty)) loadPreview();
     if (view === 'nodes') renderNodeList();
     if (view === 'overview') renderOverview();
+    if (view === 'settings') renderSettings();
     window.scrollTo(0, 0);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* settings (parameter presets)                                        */
+  /* ------------------------------------------------------------------ */
+
+  function currentDefaults() {
+    return (state.config && state.config.defaults) || {};
+  }
+
+  function renderSettings() {
+    if (!state.config) return;
+    var defaults = currentDefaults();
+    setField(el.setUuid, defaults.vlessUuid || '');
+    setField(el.setPbk, defaults.vlessPublicKey || '');
+    setField(el.setSid, defaults.vlessShortId || '');
+    setField(el.setSni, defaults.vlessServername || '');
+    clearSettingsErrors();
+  }
+
+  function setSettingsBusy(busy) {
+    el.settingsSave.disabled = busy;
+    el.settingsSave.classList.toggle('is-loading', busy);
+    el.settingsSaveSpinner.hidden = !busy;
+    el.settingsSaveLabel.textContent = busy ? '保存中…' : '保存预设';
+  }
+
+  function clearSettingsErrors() {
+    $$('.field.has-error', el.settingsForm).forEach(function (field) { field.classList.remove('has-error'); });
+    $$('.field-error', el.settingsForm).forEach(function (error) { error.textContent = ''; });
+    el.settingsGlobalError.hidden = true;
+    el.settingsGlobalError.textContent = '';
+  }
+
+  function clearSettingsFieldError(event) {
+    var field = event.target.closest ? event.target.closest('.field') : null;
+    if (field) {
+      field.classList.remove('has-error');
+      $$('.field-error', field).forEach(function (error) { error.textContent = ''; });
+    }
+    if (!el.settingsGlobalError.hidden) {
+      el.settingsGlobalError.hidden = true;
+      el.settingsGlobalError.textContent = '';
+    }
+  }
+
+  function showSettingsErrors(errors) {
+    clearSettingsErrors();
+    var globalMessage = '';
+    var firstInput = null;
+    (errors || []).forEach(function (error) {
+      var target = $('[data-error="' + error.key + '"]', el.settingsForm);
+      if (!target) {
+        if (!globalMessage) globalMessage = error.message;
+        return;
+      }
+      var field = target.closest('.field');
+      field.classList.add('has-error');
+      target.textContent = error.message;
+      if (!firstInput) firstInput = $('input, select', field);
+    });
+    if (globalMessage) {
+      el.settingsGlobalError.textContent = globalMessage;
+      el.settingsGlobalError.hidden = false;
+    }
+    if (firstInput) {
+      firstInput.focus({ preventScroll: true });
+      firstInput.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    } else if (globalMessage) {
+      el.settingsGlobalError.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }
+
+  function collectSettings() {
+    var errors = [];
+    var defaults = {};
+
+    var uuid = String(el.setUuid.value || '').trim();
+    if (uuid) {
+      if (!UUID_RE.test(uuid)) {
+        errors.push({ key: 'setUuid', message: 'UUID 格式不正确' });
+      } else {
+        defaults.vlessUuid = uuid.toLowerCase();
+      }
+    }
+
+    var pbk = String(el.setPbk.value || '').trim();
+    if (pbk) {
+      if (pbk.length > 128) {
+        errors.push({ key: 'setPbk', message: 'Reality 公钥不能超过 128 个字符' });
+      } else {
+        defaults.vlessPublicKey = pbk;
+      }
+    }
+
+    var sid = String(el.setSid.value || '').trim();
+    if (sid) {
+      if (sid.length > 32) {
+        errors.push({ key: 'setSid', message: 'Reality Short ID 不能超过 32 个字符' });
+      } else {
+        defaults.vlessShortId = sid;
+      }
+    }
+
+    var sni = hostError(el.setSni.value, 'setSni', 'SNI / 回落域名', false, errors);
+    if (sni) defaults.vlessServername = sni;
+
+    return { defaults: defaults, errors: errors };
+  }
+
+  async function saveSettings(event) {
+    event.preventDefault();
+    if (state.mutating) return;
+    if (!ensureWritable()) return;
+    clearSettingsErrors();
+    var result = collectSettings();
+    if (result.errors.length) {
+      showSettingsErrors(result.errors);
+      return;
+    }
+
+    state.mutating = true;
+    setSettingsBusy(true);
+    try {
+      var data = await request('/api/config', {
+        method: 'PUT',
+        body: { rev: state.rev, nodes: nodes(), defaults: result.defaults }
+      });
+      applyConfig(data);
+      renderAll();
+      renderSettings();
+      toast('参数预设已保存，新建 VLESS 节点时会自动填入', 'success');
+    } catch (err) {
+      if (err.status === 401) {
+        handleUnauthorized();
+      } else if (err.status === 409) {
+        toast(err.message, 'error');
+        await reloadConfig();
+        renderSettings();
+      } else if (err.status === 503) {
+        toast(err.message, 'error');
+        openModal('kv');
+        await reloadConfig();
+      } else {
+        toast(err.message || '保存失败，请稍后重试', 'error');
+      }
+    } finally {
+      state.mutating = false;
+      setSettingsBusy(false);
+    }
   }
 
   /* ------------------------------------------------------------------ */
@@ -1034,14 +1230,16 @@
     setField(el.fieldRegion, 'hk');
     setTags([]);
     setSwitch(el.fieldEnabled, true);
+    setSwitch(el.fieldShowMain, true);
 
-    setField(el.fieldUuid, generateUuid());
+    var preset = (state.config && state.config.defaults) || {};
+    setField(el.fieldUuid, preset.vlessUuid || generateUuid());
     setSegment(el.networkBox, 'tcp');
     setSwitch(el.fieldTls, true);
     setSwitch(el.fieldReality, false);
-    setField(el.fieldPbk, '');
-    setField(el.fieldSid, '');
-    setField(el.fieldSni, '');
+    setField(el.fieldPbk, preset.vlessPublicKey || '');
+    setField(el.fieldSid, preset.vlessShortId || '');
+    setField(el.fieldSni, preset.vlessServername || '');
     setField(el.fieldFp, 'chrome');
     setField(el.fieldFlow, '');
     setField(el.fieldWsPath, '/');
@@ -1084,6 +1282,7 @@
       setField(el.fieldRegion, node.region || 'other');
       setTags(node.tags || []);
       setSwitch(el.fieldEnabled, node.enabled !== false);
+      setSwitch(el.fieldShowMain, node.showInMain !== false);
 
       if (type === 'vless') {
         setField(el.fieldUuid, node.uuid || generateUuid());
@@ -1309,6 +1508,7 @@
       port: port,
       region: region,
       enabled: getSwitch(el.fieldEnabled),
+      showInMain: getSwitch(el.fieldShowMain),
       tags: selectedTags()
     };
 
@@ -1759,6 +1959,13 @@
         toggleNode(toggleButton.dataset.toggleId, toggleButton);
         return;
       }
+      var moveButton = event.target.closest('[data-move-id]');
+      if (moveButton) {
+        if (!moveButton.disabled) {
+          moveNode(moveButton.dataset.moveId, Number(moveButton.dataset.dir), moveButton);
+        }
+        return;
+      }
       var editButton = event.target.closest('[data-edit-id]');
       if (editButton) {
         openEditor(editButton.dataset.editId);
@@ -1802,6 +2009,18 @@
     el.nodeForm.addEventListener('submit', submitForm);
     el.nodeForm.addEventListener('input', clearFieldError);
     el.nodeForm.addEventListener('change', clearFieldError);
+
+    el.settingsForm.addEventListener('submit', saveSettings);
+    el.settingsForm.addEventListener('input', clearSettingsFieldError);
+    el.settingsForm.addEventListener('change', clearSettingsFieldError);
+    el.settingsClear.addEventListener('click', function () {
+      setField(el.setUuid, '');
+      setField(el.setPbk, '');
+      setField(el.setSid, '');
+      setField(el.setSni, '');
+      clearSettingsErrors();
+      toast('已清空，点击「保存预设」后生效', 'info');
+    });
     el.typeGrid.addEventListener('click', function (event) {
       var button = event.target.closest('[data-type]');
       if (!button) return;
@@ -1832,6 +2051,7 @@
 
     $('#gen-uuid').addEventListener('click', function () { setField(el.fieldUuid, generateUuid()); });
     $('#gen-vm-uuid').addEventListener('click', function () { setField(el.vmUuid, generateUuid()); });
+    $('#gen-set-uuid').addEventListener('click', function () { setField(el.setUuid, generateUuid()); });
     $('#gen-tr-password').addEventListener('click', function () { setField(el.trPassword, generatePassword()); });
     $('#gen-hy-password').addEventListener('click', function () { setField(el.hyPassword, generatePassword()); });
     $('#gen-ss-password').addEventListener('click', function () { setField(el.ssPassword, generatePassword()); });

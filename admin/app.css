@@ -186,6 +186,8 @@ html[data-theme="dark"] .btn-secondary:hover { border-color: rgba(148, 163, 184,
 .icon-btn:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-soft-2); }
 .icon-btn .icon { width: 16px; height: 16px; }
 .icon-btn.danger:hover { background: var(--danger-soft); color: var(--danger); }
+.icon-btn:disabled { opacity: .3; cursor: not-allowed; }
+.icon-btn:disabled:hover { background: none; color: inherit; }
 
 input, select {
   width: 100%;
@@ -867,7 +869,7 @@ button.mini-item:focus-visible { outline: 2px solid var(--accent); outline-offse
 .table-panel { padding: 0; overflow: hidden; }
 .node-head {
   display: grid;
-  grid-template-columns: minmax(210px, 1.6fr) minmax(150px, 1.2fr) 92px 92px 66px 108px;
+  grid-template-columns: minmax(210px, 1.6fr) minmax(150px, 1.2fr) 92px 92px 66px 152px;
   align-items: center;
   gap: 16px;
   height: 42px;
@@ -882,7 +884,7 @@ button.mini-item:focus-visible { outline: 2px solid var(--accent); outline-offse
 }
 .node-row {
   display: grid;
-  grid-template-columns: minmax(210px, 1.6fr) minmax(150px, 1.2fr) 92px 92px 66px 108px;
+  grid-template-columns: minmax(210px, 1.6fr) minmax(150px, 1.2fr) 92px 92px 66px 152px;
   align-items: center;
   gap: 16px;
   min-height: 66px;
@@ -1386,4 +1388,11 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--line); bo
     animation-iteration-count: 1 !important;
     transition-duration: .001ms !important;
   }
+}
+
+/* ---- settings view (v2.2.0) ---- */
+.settings-panel { max-width: 780px; padding: 26px 28px; }
+.settings-foot { display: flex; align-items: center; gap: 10px; margin-top: 20px; }
+@media (max-width: 640px) {
+  .settings-panel { padding: 20px 18px; }
 }
