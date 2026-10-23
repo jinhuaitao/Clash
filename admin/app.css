@@ -385,8 +385,6 @@ html[data-theme="dark"] .switch::after { background: #f8fafc; }
 }
 .input-inline .btn:hover { background: var(--panel-inset); border-color: var(--line-3); }
 .token-input { font-family: var(--mono); font-size: 11.5px; letter-spacing: .015em; }
-.token-copy-btn { width: 42px; padding: 0; justify-content: center; }
-.token-copy-btn .icon { width: 15px; height: 15px; }
 
 .form-error {
   background: var(--danger-soft);

@@ -423,7 +423,7 @@
     el.authTokenNote = $('#auth-token-note');
     el.genAuthToken = $('#gen-auth-token');
     el.clearAuthToken = $('#clear-auth-token');
-    el.copyAuthToken = $('#copy-auth-token');
+    el.setProviderBase = $('#set-provider-base');
     el.setUuid = $('#set-uuid');
     el.setPbk = $('#set-pbk');
     el.setSid = $('#set-sid');
@@ -1632,11 +1632,11 @@
   function renderAuthTokenNote() {
     if (!el.authTokenNote) return;
     var meta = state.meta || {};
-    var stored = !!(state.config && state.config.authToken);
-    if (stored) {
-      el.authTokenNote.textContent = '当前使用设置页保存的令牌；保存新值会立即使旧令牌失效，点「清除」可删除并回退到环境变量。该令牌仅用于订阅访问，不能登录控制台。';
+    var hint = meta.authTokenHint || '';
+    if (meta.authSource === 'settings') {
+      el.authTokenNote.textContent = '当前令牌 ' + hint + '（由设置页保存）；保存新值会立即使旧令牌失效，点「清除」可删除并回退到环境变量。为避免明文外泄，控制台不再回显完整令牌，需要新令牌请点「生成」。该令牌仅用于订阅访问，不能登录控制台。';
     } else if (meta.authSource === 'environment') {
-      el.authTokenNote.textContent = '当前使用环境变量 AUTH_TOKEN；填写新令牌并保存后，改由设置页管理。该令牌仅用于订阅访问，不能登录控制台。';
+      el.authTokenNote.textContent = '当前使用环境变量 AUTH_TOKEN' + (hint ? '（' + hint + '）' : '') + '；填写新令牌并保存后，改由设置页管理。该令牌仅用于订阅访问，不能登录控制台。';
     } else {
       el.authTokenNote.textContent = '当前尚未配置订阅令牌，填写并保存后订阅链接立即可用；该令牌不能用于登录控制台。';
     }
@@ -1647,12 +1647,14 @@
     var defaults = currentDefaults();
     var info = state.config.subscription || {};
     state.clearAuthToken = false;
-    setField(el.setAuthToken, state.config.authToken || '');
+    // 令牌不回显明文：输入框始终留空，占位符给出掩码与下一步操作提示
+    setField(el.setAuthToken, '');
     if (el.setAuthToken) {
-      el.setAuthToken.placeholder = state.config.authToken
-        ? '留空则保持当前令牌不变'
+      el.setAuthToken.placeholder = (state.meta && state.meta.authTokenHint)
+        ? '当前 ' + state.meta.authTokenHint + '；留空保持不变'
         : '至少 16 个字符';
     }
+    setField(el.setProviderBase, state.config.providerBase || '');
     renderAuthTokenNote();
     setField(el.setUuid, defaults.vlessUuid || '');
     setField(el.setPbk, defaults.vlessPublicKey || '');
@@ -1732,7 +1734,10 @@
     var authToken = '';
     var authTokenRaw = String(el.setAuthToken.value || '').trim();
     if (authTokenRaw) {
-      if (authTokenRaw.length < 16) {
+      // 掩码优先于长度：粘贴回来的掩码无论多长都是同一个误操作，提示只给一条
+      if (authTokenRaw.indexOf('\u2022') !== -1) {
+        errors.push({ key: 'setAuthToken', message: '订阅令牌不能包含掩码字符，请填写完整令牌' });
+      } else if (authTokenRaw.length < 16) {
         errors.push({ key: 'setAuthToken', message: '订阅令牌至少需要 16 个字符' });
       } else if (authTokenRaw.length > 256) {
         errors.push({ key: 'setAuthToken', message: '订阅令牌不能超过 256 个字符' });
@@ -1745,6 +1750,15 @@
 
     // 点击过「清除」且输入框为空：保存时下发 null 删除设置页令牌；一旦又输入了新值则取消清除
     var clearToken = state.clearAuthToken && !authTokenRaw;
+
+    var providerBase = String(el.setProviderBase.value || '').trim();
+    if (providerBase) {
+      if (providerBase.length > 256) {
+        errors.push({ key: 'setProviderBase', message: '镜像前缀不能超过 256 个字符' });
+      } else if (!/^https:\/\/[A-Za-z0-9._~:\/?#@!$&*+,;=%-]+$/.test(providerBase)) {
+        errors.push({ key: 'setProviderBase', message: '镜像前缀需以 https:// 开头，且不含空格或引号' });
+      }
+    }
 
     var uuid = String(el.setUuid.value || '').trim();
     if (uuid) {
@@ -1808,7 +1822,14 @@
       }
     }
 
-    return { defaults: defaults, subscription: subscription, authToken: authToken, clearToken: clearToken, errors: errors };
+    return {
+      defaults: defaults,
+      subscription: subscription,
+      authToken: authToken,
+      providerBase: providerBase,
+      clearToken: clearToken,
+      errors: errors
+    };
   }
 
   async function saveSettings(event) {
@@ -1829,7 +1850,8 @@
         rev: state.rev,
         nodes: nodes(),
         defaults: result.defaults,
-        subscription: result.subscription
+        subscription: result.subscription,
+        providerBase: result.providerBase
       };
       if (result.clearToken) body.authToken = null;
       else if (result.authToken) body.authToken = result.authToken;
@@ -2210,6 +2232,7 @@
       if (opts.defaults) body.defaults = opts.defaults;
       if (opts.subscription) body.subscription = opts.subscription;
       if (opts.regionOrder) body.regionOrder = opts.regionOrder;
+      if (opts.providerBase !== undefined) body.providerBase = opts.providerBase;
       var data = await request('/api/config', {
         method: 'PUT',
         body: body
@@ -2415,7 +2438,8 @@
       nodes: nodes(),
       defaults: currentDefaults(),
       regionOrder: (state.config && state.config.regionOrder) || {},
-      subscription: (state.config && state.config.subscription) || {}
+      subscription: (state.config && state.config.subscription) || {},
+      providerBase: (state.config && state.config.providerBase) || ''
     };
     var blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
     var url = URL.createObjectURL(blob);
@@ -2468,6 +2492,7 @@
       defaults: parsed.defaults && typeof parsed.defaults === 'object' ? parsed.defaults : {},
       regionOrder: parsed.regionOrder && typeof parsed.regionOrder === 'object' ? parsed.regionOrder : {},
       subscription: parsed.subscription && typeof parsed.subscription === 'object' ? parsed.subscription : {},
+      providerBase: typeof parsed.providerBase === 'string' ? parsed.providerBase : '',
       successMessage: '已导入备份（' + parsed.nodes.length + ' 个节点）',
       rerenderOnError: true
     });
@@ -3282,14 +3307,14 @@
 
     setField(el.trPassword, generatePassword());
     setField(el.trSni, '');
-    setSwitch(el.trSkip, true);
+    setSwitch(el.trSkip, false);
     setSwitch(el.trUdp, true);
 
     setField(el.hyPassword, generatePassword());
     setField(el.hySni, 'bing.com');
     setField(el.hyUp, '80 mbps');
     setField(el.hyDown, '500 mbps');
-    setSwitch(el.hySkip, true);
+    setSwitch(el.hySkip, false);
 
     setField(el.ssCipher, 'aes-256-gcm');
     setField(el.ssPassword, generatePassword());
@@ -3334,14 +3359,14 @@
       } else if (type === 'trojan') {
         setField(el.trPassword, node.password || '');
         setField(el.trSni, node.sni || '');
-        setSwitch(el.trSkip, node.skipCertVerify !== false);
+        setSwitch(el.trSkip, node.skipCertVerify === true);
         setSwitch(el.trUdp, node.udp !== false);
       } else if (type === 'hysteria2') {
         setField(el.hyPassword, node.password || '');
         setField(el.hySni, node.sni || '');
         setField(el.hyUp, node.up || '');
         setField(el.hyDown, node.down || '');
-        setSwitch(el.hySkip, node.skipCertVerify !== false);
+        setSwitch(el.hySkip, node.skipCertVerify === true);
       } else if (type === 'ss') {
         setField(el.ssCipher, node.cipher || 'aes-256-gcm');
         setField(el.ssPassword, node.password || '');
@@ -4407,14 +4432,6 @@
     if (el.setAuthToken) on(el.setAuthToken, 'input', function () {
       // 又输入了新值：取消待清除状态
       if (String(el.setAuthToken.value || '').trim()) state.clearAuthToken = false;
-    });
-    if (el.copyAuthToken) on(el.copyAuthToken, 'click', function () {
-      var token = String(el.setAuthToken.value || '').trim();
-      if (!token) {
-        toast('当前没有可复制的订阅令牌', 'error');
-        return;
-      }
-      copyText(token, '订阅令牌已复制');
     });
     on(el.typeGrid, 'click', function (event) {
       var button = event.target.closest('[data-type]');

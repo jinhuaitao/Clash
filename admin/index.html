@@ -613,13 +613,18 @@
             <div class="field">
               <label for="set-auth-token">AUTH_TOKEN（订阅令牌）</label>
               <div class="input-inline">
-                <input id="set-auth-token" class="token-input" placeholder="至少 16 个字符；留空沿用当前令牌" spellcheck="false" autocomplete="off">
+                <input id="set-auth-token" class="token-input" placeholder="留空保持不变；点「生成」或填入新值后保存即替换" spellcheck="false" autocomplete="off">
                 <button class="btn btn-quiet btn-sm" type="button" id="gen-auth-token"><svg class="icon"><use href="#i-refresh"></use></svg>生成</button>
                 <button class="btn btn-quiet btn-sm" type="button" id="clear-auth-token" title="删除设置页保存的令牌，回退到环境变量 AUTH_TOKEN">清除</button>
-                <button class="btn btn-quiet btn-sm token-copy-btn" type="button" id="copy-auth-token" aria-label="复制订阅令牌" title="复制订阅令牌"><svg class="icon"><use href="#i-copy"></use></svg></button>
               </div>
               <div class="field-error" data-error="setAuthToken"></div>
               <div class="field-hint" id="auth-token-note">当前尚未配置订阅令牌，填写并保存后订阅链接立即可用。</div>
+            </div>
+            <div class="field">
+              <label for="set-provider-base">rule-providers 镜像前缀</label>
+              <input id="set-provider-base" placeholder="留空使用 cdn.jsdelivr.net 上的 Loyalsoldier 规则集" spellcheck="false" autocomplete="off">
+              <div class="field-error" data-error="setProviderBase"></div>
+              <div class="field-hint">分流规则集默认从 jsDelivr 拉取；拉取失败或想自建镜像时填这里。只替换 URL 前缀，规则文件名不变，必须是 <code>https://</code> 开头且不含空格。</div>
             </div>
           </section>
 
@@ -948,8 +953,8 @@
             <div class="field-error" data-error="trSni"></div>
           </div>
           <div class="switch-row">
-            <div class="switch-copy"><b>跳过证书校验</b><small>使用自签证书时建议开启</small></div>
-            <button type="button" class="switch" id="f-tr-skip" role="switch" aria-checked="true" aria-label="跳过证书校验"></button>
+            <div class="switch-copy"><b>跳过证书校验</b><small>仅在自签证书且确认链路可信时开启，默认校验</small></div>
+            <button type="button" class="switch" id="f-tr-skip" role="switch" aria-checked="false" aria-label="跳过证书校验"></button>
           </div>
           <div class="switch-row">
             <div class="switch-copy"><b>UDP 转发</b><small>允许通过该节点转发 UDP 流量</small></div>
@@ -985,8 +990,8 @@
             </div>
           </div>
           <div class="switch-row">
-            <div class="switch-copy"><b>跳过证书校验</b><small>使用自签证书时建议开启</small></div>
-            <button type="button" class="switch" id="f-hy-skip" role="switch" aria-checked="true" aria-label="跳过证书校验"></button>
+            <div class="switch-copy"><b>跳过证书校验</b><small>仅在自签证书且确认链路可信时开启，默认校验</small></div>
+            <button type="button" class="switch" id="f-hy-skip" role="switch" aria-checked="false" aria-label="跳过证书校验"></button>
           </div>
         </section>
 
