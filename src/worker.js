@@ -113,6 +113,9 @@ async function handleRequest(request, env) {
       const access = await subscriptionAccess(env, token)
       if (access) return await serveSubscription(env, access.config)
     }
+    // 无令牌路径同样限流：伪装页每次都要拼整页 HTML，不能成为免费刷 CPU 的入口
+    const decoyLimited = checkSubRateLimit(request)
+    if (decoyLimited) return decoyLimited
     return renderDecoy(request)
   } catch (err) {
     if (err instanceof HttpError) {
@@ -242,8 +245,15 @@ async function verifyPassword(password, user) {
     user.passwordIterations <= 100000
     ? user.passwordIterations
     : PASSWORD_ITERATIONS
-  const salt = base64UrlToBytes(user.passwordSalt)
-  const expected = base64UrlToBytes(user.passwordHash)
+  // 盐/哈希可能因 KV 被手工写坏而不是合法 base64：解码失败按密码不正确处理，不能 500
+  let salt
+  let expected
+  try {
+    salt = base64UrlToBytes(user.passwordSalt)
+    expected = base64UrlToBytes(user.passwordHash)
+  } catch (err) {
+    return false
+  }
   if (salt.length < 8 || expected.length !== 32) return false
   const actual = await derivePasswordHash(password, salt, iterations)
   return bytesEqual(actual, expected)
@@ -311,11 +321,25 @@ function newUserId() {
   return 'u_' + (crypto.randomUUID ? crypto.randomUUID() : bytesToBase64Url(randomBytes(16)))
 }
 
+/* 盐/哈希必须是可解码的 base64url，否则 verifyPassword 会抛未捕获异常导致登录 500 */
+function isDecodableBase64Url(value) {
+  if (typeof value !== 'string' || !value) return false
+  try {
+    base64UrlToBytes(value)
+    return true
+  } catch (err) {
+    return false
+  }
+}
+
 function normalizeStoredUser(raw) {
   if (!raw || typeof raw !== 'object') throw new Error('invalid user')
   if (typeof raw.id !== 'string' || !raw.id) throw new Error('invalid user id')
   if (typeof raw.username !== 'string' || !USERNAME_RE.test(raw.username)) throw new Error('invalid username')
   if (typeof raw.passwordSalt !== 'string' || typeof raw.passwordHash !== 'string') throw new Error('invalid password')
+  if (!isDecodableBase64Url(raw.passwordSalt) || !isDecodableBase64Url(raw.passwordHash)) {
+    throw new Error('invalid password encoding')
+  }
   if (!Number.isFinite(raw.passwordIterations)) throw new Error('invalid password iterations')
   const version = Number.isFinite(raw.version) && raw.version > 0 ? raw.version : 1
   return {
@@ -391,13 +415,33 @@ function usersResponse(store, principal) {
   }
 }
 
+/* 恢复令牌爆破计数用的虚拟用户名（与登录限流共用桶，但独立计数） */
+const RECOVERY_RATE_KEY = '__recovery__'
+
+/* 会话令牌形如 base64url.base64url；恢复令牌与订阅令牌都没有点 */
+function looksLikeSessionToken(value) {
+  const parts = String(value || '').split('.')
+  return parts.length === 2 &&
+    /^[A-Za-z0-9_-]+$/.test(parts[0]) &&
+    /^[A-Za-z0-9_-]+$/.test(parts[1])
+}
+
 async function authenticateRequest(request, env) {
   const supplied = bearerToken(request)
   if (!supplied) return null
 
   const dedicated = dedicatedAdminToken(env)
-  if (dedicated && tokenEqual(supplied, dedicated)) {
-    return { kind: 'recovery', username: '部署恢复令牌', userId: null, user: null }
+  if (dedicated) {
+    if (tokenEqual(supplied, dedicated)) {
+      clearLoginFailures(request, RECOVERY_RATE_KEY)
+      return { kind: 'recovery', username: '部署恢复令牌', userId: null, user: null }
+    }
+    // 既不是恢复令牌、也不像会话令牌：按恢复通道爆破处理（8 次 / 10 分钟）
+    if (!looksLikeSessionToken(supplied)) {
+      const limited = checkLoginRateLimit(request, RECOVERY_RATE_KEY)
+      if (limited) throw new HttpError(429, '尝试次数过多，请稍后再试')
+      recordLoginFailure(request, RECOVERY_RATE_KEY)
+    }
   }
 
   const { store } = await readUsersStore(env)
@@ -1062,7 +1106,8 @@ async function readJsonBody(request) {
   const declared = Number(request.headers.get('content-length') || 0)
   if (declared > MAX_BODY) throw new HttpError(413, '提交的数据过大')
   const raw = await request.text()
-  if (raw.length > MAX_BODY) throw new HttpError(413, '提交的数据过大')
+  // 按 UTF-8 字节数计算：raw.length 是 UTF-16 码元长度，256K 个中文字符实际约 768KB
+  if (new TextEncoder().encode(raw).length > MAX_BODY) throw new HttpError(413, '提交的数据过大')
 
   let body
   try {
@@ -1101,9 +1146,14 @@ async function apiSave(request, url, env, principal) {
     : sanitizeSubscription(current.config.subscription)
   let authToken = storedAuthToken(current.config)
   if (body.authToken !== undefined) {
-    const candidate = validateAuthToken(body.authToken)
-    // 空值表示沿用当前令牌，避免误清空后无法登录或生成订阅链接
-    if (candidate) authToken = candidate
+    if (body.authToken === null) {
+      // 显式清除：删除设置页令牌，回退到环境变量 AUTH_TOKEN（都没有则订阅需要重新配置）
+      authToken = ''
+    } else {
+      const candidate = validateAuthToken(body.authToken)
+      // 空值表示沿用当前令牌，避免误清空后无法登录或生成订阅链接
+      if (candidate) authToken = candidate
+    }
   }
   const next = {
     v: 1,

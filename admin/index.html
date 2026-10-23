@@ -615,6 +615,7 @@
               <div class="input-inline">
                 <input id="set-auth-token" class="token-input" placeholder="至少 16 个字符；留空沿用当前令牌" spellcheck="false" autocomplete="off">
                 <button class="btn btn-quiet btn-sm" type="button" id="gen-auth-token"><svg class="icon"><use href="#i-refresh"></use></svg>生成</button>
+                <button class="btn btn-quiet btn-sm" type="button" id="clear-auth-token" title="删除设置页保存的令牌，回退到环境变量 AUTH_TOKEN">清除</button>
                 <button class="btn btn-quiet btn-sm token-copy-btn" type="button" id="copy-auth-token" aria-label="复制订阅令牌" title="复制订阅令牌"><svg class="icon"><use href="#i-copy"></use></svg></button>
               </div>
               <div class="field-error" data-error="setAuthToken"></div>

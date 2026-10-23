@@ -105,6 +105,8 @@
     linksTab: 'import',
     linksTimer: 0,
     linksExportText: '',
+    /* 点击「清除」后置位：保存时下发 authToken: null，删除设置页令牌回退环境变量 */
+    clearAuthToken: false,
     drawerFocus: null,
     layerFocus: {}
   };
@@ -310,7 +312,6 @@
     el.subUrlText = $('#sub-url-text');
     el.subReveal = $('#sub-reveal');
     el.subCopy = $('#sub-copy');
-    el.subCard = $('.sub-card');
 
     el.statTotal = $('#stat-total');
     el.statEnabled = $('#stat-enabled');
@@ -421,6 +422,7 @@
     el.setAuthToken = $('#set-auth-token');
     el.authTokenNote = $('#auth-token-note');
     el.genAuthToken = $('#gen-auth-token');
+    el.clearAuthToken = $('#clear-auth-token');
     el.copyAuthToken = $('#copy-auth-token');
     el.setUuid = $('#set-uuid');
     el.setPbk = $('#set-pbk');
@@ -1573,13 +1575,20 @@
       return;
     }
 
-    // 未筛选（或按协议筛选）：调整全局顺序
+    // 未筛选：视图中相邻即全局相邻，等价于交换；
+    // 按协议筛选：视图中相邻的节点在全局数组里可能隔着其他协议的节点，
+    // 直接交换会把中间的节点一起牵连进来。改为「移出后插入到目标旁」，
+    // 筛选视图结果一致，且不影响协议筛选之外的节点。
     var nextNodes = nodes().slice();
     var a = nextNodes.findIndex(function (node) { return node.id === view[viewIndex].id; });
     var b = nextNodes.findIndex(function (node) { return node.id === view[viewTarget].id; });
-    var moved = nextNodes[a];
-    nextNodes[a] = nextNodes[b];
-    nextNodes[b] = moved;
+    if (a < 0 || b < 0) {
+      if (button) button.disabled = false;
+      return;
+    }
+    var moved = nextNodes.splice(a, 1)[0];
+    if (a < b) b -= 1; // 移出的节点在目标之前时，目标索引左移一位
+    nextNodes.splice(dir < 0 ? b : b + 1, 0, moved);
     var ok = await saveNodes(nextNodes, {
       successMessage: dir < 0 ? '节点已上移' : '节点已下移',
       rerenderOnError: true
@@ -1625,7 +1634,7 @@
     var meta = state.meta || {};
     var stored = !!(state.config && state.config.authToken);
     if (stored) {
-      el.authTokenNote.textContent = '当前使用设置页保存的令牌；保存新值会立即使旧令牌失效。该令牌仅用于订阅访问，不能登录控制台。';
+      el.authTokenNote.textContent = '当前使用设置页保存的令牌；保存新值会立即使旧令牌失效，点「清除」可删除并回退到环境变量。该令牌仅用于订阅访问，不能登录控制台。';
     } else if (meta.authSource === 'environment') {
       el.authTokenNote.textContent = '当前使用环境变量 AUTH_TOKEN；填写新令牌并保存后，改由设置页管理。该令牌仅用于订阅访问，不能登录控制台。';
     } else {
@@ -1637,6 +1646,7 @@
     if (!state.config) return;
     var defaults = currentDefaults();
     var info = state.config.subscription || {};
+    state.clearAuthToken = false;
     setField(el.setAuthToken, state.config.authToken || '');
     if (el.setAuthToken) {
       el.setAuthToken.placeholder = state.config.authToken
@@ -1733,6 +1743,9 @@
       }
     }
 
+    // 点击过「清除」且输入框为空：保存时下发 null 删除设置页令牌；一旦又输入了新值则取消清除
+    var clearToken = state.clearAuthToken && !authTokenRaw;
+
     var uuid = String(el.setUuid.value || '').trim();
     if (uuid) {
       if (!UUID_RE.test(uuid)) {
@@ -1795,7 +1808,7 @@
       }
     }
 
-    return { defaults: defaults, subscription: subscription, authToken: authToken, errors: errors };
+    return { defaults: defaults, subscription: subscription, authToken: authToken, clearToken: clearToken, errors: errors };
   }
 
   async function saveSettings(event) {
@@ -1818,14 +1831,18 @@
         defaults: result.defaults,
         subscription: result.subscription
       };
-      if (result.authToken) body.authToken = result.authToken;
+      if (result.clearToken) body.authToken = null;
+      else if (result.authToken) body.authToken = result.authToken;
       var data = await request('/api/config', { method: 'PUT', body: body });
       applyConfig(data);
       renderAll();
       renderSettings();
-      toast(result.authToken
-        ? '设置已保存，新订阅令牌即时生效'
-        : '设置已保存，订阅信息即时生效，新建 VLESS 节点将使用新预设', 'success');
+      state.clearAuthToken = false;
+      toast(result.clearToken
+        ? '设置已保存，已清除订阅令牌并回退到环境变量'
+        : (result.authToken
+          ? '设置已保存，新订阅令牌即时生效'
+          : '设置已保存，订阅信息即时生效，新建 VLESS 节点将使用新预设'), 'success');
     } catch (err) {
       if (err.status === 401) {
         handleUnauthorized();
@@ -2615,6 +2632,8 @@
     var reality = security === 'reality';
     var tls = security === 'tls' || reality;
     if (reality && !query.pbk) throw new Error('Reality 链接缺少 pbk 公钥');
+    // 服务端只接受 TCP 上的 Reality；这里提前拦下，否则整批导入会被服务端一次拒绝
+    if (reality && network !== 'tcp') throw new Error('Reality 仅支持 TCP 传输');
 
     var node = {
       type: 'vless',
@@ -2654,6 +2673,7 @@
     var uuid = String(data.id || '').trim();
     if (!UUID_RE.test(uuid)) throw new Error('UUID 格式不正确');
     var aid = data.aid === undefined || data.aid === null || data.aid === '' ? 0 : Number(data.aid);
+    if (!Number.isInteger(aid) || aid < 0 || aid > 65535) throw new Error('VMess alterId 无效');
     if (aid) throw new Error('暂不支持 alterId ≠ 0 的旧版 VMess');
     if (data.scy && String(data.scy).toLowerCase() !== 'auto') {
       throw new Error('暂不支持 ' + data.scy + ' 加密方式');
@@ -3597,12 +3617,14 @@
 
   function apiFieldKey(field) {
     var maps = {
+      // 服务端的 reality 校验（如「Reality 仅支持 TCP」）没有专属锚点，统一标到传输方式字段
+      vless: { reality: 'network' },
       vmess: { uuid: 'vmUuid', servername: 'vmServername', wsHost: 'vmWsHost', wsPath: 'vmWsPath', grpcService: 'vmGrpcService' },
       trojan: { password: 'trPassword', sni: 'trSni' },
       hysteria2: { password: 'hyPassword', sni: 'hySni', up: 'hyUp', down: 'hyDown' },
       ss: { password: 'ssPassword' }
     };
-    if (field === 'name' || field === 'server' || field === 'port' || field === 'reality') return field;
+    if (field === 'name' || field === 'server' || field === 'port') return field;
     var map = maps[state.formType];
     return map && map[field] ? map[field] : field;
   }
@@ -4371,9 +4393,20 @@
     });
     if (el.genAuthToken) on(el.genAuthToken, 'click', function () {
       setField(el.setAuthToken, generatePassword(32));
+      state.clearAuthToken = false;
       clearSettingsErrors();
       el.setAuthToken.focus();
       el.setAuthToken.select();
+    });
+    if (el.clearAuthToken) on(el.clearAuthToken, 'click', function () {
+      state.clearAuthToken = true;
+      setField(el.setAuthToken, '');
+      clearSettingsErrors();
+      toast('已标记清除订阅令牌，点击「保存设置」后生效；未配置环境变量时订阅将需要重新配置', 'info');
+    });
+    if (el.setAuthToken) on(el.setAuthToken, 'input', function () {
+      // 又输入了新值：取消待清除状态
+      if (String(el.setAuthToken.value || '').trim()) state.clearAuthToken = false;
     });
     if (el.copyAuthToken) on(el.copyAuthToken, 'click', function () {
       var token = String(el.setAuthToken.value || '').trim();
