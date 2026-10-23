@@ -3220,13 +3220,13 @@
     clearFormErrors();
     setField(el.fieldName, '');
     setField(el.fieldServer, '');
-    setField(el.fieldPort, preset.vlessPort || 443);
     setField(el.fieldRegion, 'hk');
     setTags([]);
     setSwitch(el.fieldEnabled, true);
     setSwitch(el.fieldShowMain, true);
 
-    var preset = (state.config && state.config.defaults) || {};
+    var preset = currentDefaults();
+    setField(el.fieldPort, preset.vlessPort || 443);
     setField(el.fieldUuid, preset.vlessUuid || generateUuid());
     setSegment(el.networkBox, 'tcp');
     setSwitch(el.fieldTls, true);
