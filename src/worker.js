@@ -4,7 +4,7 @@ export default {
   },
 }
 
-const VERSION = '2.6.1'
+const VERSION = '2.6.2'
 const CONFIG_KEY = 'config'
 const USERS_KEY = 'users'
 const MAX_NODES = 300
@@ -45,6 +45,11 @@ const REGION_ORDER = ['us', 'jp', 'hk', 'relay']
 const REGIONS = ['us', 'jp', 'hk', 'relay', 'other']
 const TYPES = ['vless', 'hysteria2', 'trojan', 'vmess', 'ss']
 const TAGS = ['chatgpt', 'google', 'youtube', 'telegram']
+/* 写入校验与 YAML 渲染共用同一套白名单，避免两处规则漂移 */
+const NETWORKS = ['tcp', 'ws', 'grpc']
+const FINGERPRINTS = ['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', 'random', 'randomized']
+const CIPHERS = ['aes-128-gcm', 'aes-256-gcm', 'chacha20-ietf-poly1305', 'xchacha20-ietf-poly1305']
+const FLOWS = ['', 'xtls-rprx-vision']
 
 const APP_GROUPS = [
   {
@@ -103,6 +108,8 @@ async function handleRequest(request, env) {
     }
     const token = url.searchParams.get('token') || ''
     if (token) {
+      const limited = checkSubRateLimit(request)
+      if (limited) return limited
       const access = await subscriptionAccess(env, token)
       if (access) return await serveSubscription(env, access.config)
     }
@@ -667,9 +674,9 @@ function validateNodes(input) {
   if (!Array.isArray(input)) throw new HttpError(400, '节点数据格式不正确')
   if (input.length > MAX_NODES) throw new HttpError(400, `节点数量不能超过 ${MAX_NODES} 个`)
 
-  const allowedFingerprints = ['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', 'random', 'randomized']
-  const allowedNetworks = ['tcp', 'ws', 'grpc']
-  const allowedCiphers = ['aes-128-gcm', 'aes-256-gcm', 'chacha20-ietf-poly1305', 'xchacha20-ietf-poly1305']
+  const allowedFingerprints = FINGERPRINTS
+  const allowedNetworks = NETWORKS
+  const allowedCiphers = CIPHERS
   const ids = new Set()
   const names = new Set()
   const nodes = []
@@ -866,6 +873,14 @@ async function apiSetup(request, env) {
 
   const result = await readUsersStore(env)
   if (result.store) return json({ error: '控制台已完成初始化，请直接登录' }, 409)
+  // 用户库存在但解析失败：若放行初始化，任何访问者都能覆盖原数据并抢占管理员。
+  // 恢复动作必须由持有 KV 写权限的人完成（删除 users 记录），而不是公开的 setup 接口。
+  if (result.corrupted) {
+    return json({
+      error: '用户数据已损坏，出于安全考虑已阻止自动初始化。请先在 KV 中删除 users 记录，或使用 ADMIN_TOKEN 恢复后再初始化',
+      corrupted: true,
+    }, 409)
+  }
   if (!kvBinding(env)) throw new HttpError(503, '尚未绑定 SUB_KV，无法创建管理员账号')
 
   const dedicated = dedicatedAdminToken(env)
@@ -1149,6 +1164,8 @@ function json(data, status = 200, extraHeaders) {
 
 const API_RATE_WINDOW_MS = 60 * 1000
 const API_RATE_MAX = 120
+/* 订阅路径：客户端会周期性刷新，阈值放宽到 240/分钟，只用于挡住令牌爆破 */
+const SUB_RATE_MAX = 240
 const apiRateBuckets = new Map()
 
 const LOGIN_RATE_WINDOW_MS = 10 * 60 * 1000
@@ -1195,26 +1212,36 @@ function clearLoginFailures(request, username) {
   loginFailureBuckets.delete(loginBucketKey(request, username))
 }
 
-function checkApiRateLimit(request) {
+function rateLimit(request, keyPrefix, max) {
   const ip = request.headers.get('cf-connecting-ip') || 'unknown'
+  const key = keyPrefix + ip
   const now = Date.now()
-  let bucket = apiRateBuckets.get(ip)
+  let bucket = apiRateBuckets.get(key)
   if (!bucket || now - bucket.start >= API_RATE_WINDOW_MS) {
     bucket = { start: now, count: 0 }
-    apiRateBuckets.set(ip, bucket)
+    apiRateBuckets.set(key, bucket)
   }
   if (apiRateBuckets.size > 2000) {
-    for (const [key, value] of apiRateBuckets) {
-      if (now - value.start >= API_RATE_WINDOW_MS) apiRateBuckets.delete(key)
+    for (const [item, value] of apiRateBuckets) {
+      if (now - value.start >= API_RATE_WINDOW_MS) apiRateBuckets.delete(item)
       if (apiRateBuckets.size <= 1000) break
     }
   }
   bucket.count += 1
-  if (bucket.count > API_RATE_MAX) {
+  if (bucket.count > max) {
     const retryAfter = Math.max(1, Math.ceil((API_RATE_WINDOW_MS - (now - bucket.start)) / 1000))
     return json({ error: '请求过于频繁，请稍后再试' }, 429, { 'retry-after': String(retryAfter) })
   }
   return null
+}
+
+function checkApiRateLimit(request) {
+  return rateLimit(request, 'api:', API_RATE_MAX)
+}
+
+/* 订阅拉取单独计数：客户端会周期性刷新，阈值放宽，仅用于挡住令牌爆破 */
+function checkSubRateLimit(request) {
+  return rateLimit(request, 'sub:', SUB_RATE_MAX)
 }
 
 function baseHeaders() {
@@ -1265,6 +1292,10 @@ function subscriptionHeaders(config) {
 
 function buildYaml(config) {
   const enabled = config.nodes.filter(node => node.enabled)
+  const renderable = enabled.filter(isRenderableNode)
+  if (renderable.length !== enabled.length) {
+    console.warn('Skipped invalid nodes while rendering YAML:', enabled.length - renderable.length)
+  }
   const time = new Intl.DateTimeFormat('zh-CN', {
     year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', second: '2-digit',
@@ -1288,9 +1319,10 @@ function buildYaml(config) {
     '',
   ].join('\n')
 
-  const proxies = enabled.map(nodeToYaml).join('\n')
-  const groups = buildProxyGroups(config).map(groupToYaml).join('\n')
-  const proxySection = enabled.length ? ['proxies:', proxies] : ['proxies: []']
+  const proxies = renderable.map(nodeToYaml).join('\n')
+  // 策略组只引用实际渲染出来的节点，否则 Clash 会因 proxy not found 报错
+  const groups = buildProxyGroups({ ...config, nodes: renderable }).map(groupToYaml).join('\n')
+  const proxySection = renderable.length ? ['proxies:', proxies] : ['proxies: []']
 
   return [
     header,
@@ -1312,17 +1344,36 @@ function yq(value) {
   return JSON.stringify(String(value))
 }
 
+/**
+ * 渲染前的最后一道防线。
+ * KV 里可能存在旧版本写入、手工编辑或竞态产生的异常数据，读路径不会再跑一遍
+ * validateNodes，所以这里必须自行兜底：枚举字段只允许白名单值，否则整节点跳过，
+ * 避免把含换行的值直接拼进 YAML 造成结构破坏或字段注入。
+ */
+function safeEnum(value, allowed, fallback) {
+  return allowed.includes(value) ? value : fallback
+}
+
+function isRenderableNode(node) {
+  if (!node || typeof node !== 'object') return false
+  if (!TYPES.includes(node.type)) return false
+  if (!Number.isInteger(node.port) || node.port < 1 || node.port > 65535) return false
+  if (typeof node.server !== 'string' || !node.server) return false
+  if (typeof node.name !== 'string' || !node.name) return false
+  return true
+}
+
 function nodeToYaml(node) {
   const lines = [
     `- name: ${yq(node.name)}`,
-    `  type: ${node.type}`,
+    `  type: ${safeEnum(node.type, TYPES, 'vless')}`,
     `  server: ${yq(node.server)}`,
-    `  port: ${node.port}`,
+    `  port: ${Number.isInteger(node.port) ? node.port : 443}`,
   ]
 
   if (node.type === 'vless') {
     lines.push(`  uuid: ${yq(node.uuid)}`)
-    lines.push(`  network: ${node.network}`)
+    lines.push(`  network: ${safeEnum(node.network, NETWORKS, 'tcp')}`)
     if (node.network === 'ws') {
       lines.push('  ws-opts:')
       lines.push(`    path: ${yq(node.wsPath || '/')}`)
@@ -1337,14 +1388,14 @@ function nodeToYaml(node) {
     }
     if (node.udp) lines.push('  udp: true')
     if (node.tls || node.reality) lines.push('  tls: true')
-    if (node.flow && node.network === 'tcp' && node.tls) lines.push(`  flow: ${node.flow}`)
+    if (node.flow && node.network === 'tcp' && node.tls) lines.push(`  flow: ${safeEnum(node.flow, FLOWS, '')}`)
     if (node.servername && (node.tls || node.reality)) lines.push(`  servername: ${yq(node.servername)}`)
     if (node.reality) {
       lines.push('  reality-opts:')
       lines.push(`    public-key: ${yq(node.publicKey)}`)
       if (node.shortId) lines.push(`    short-id: ${yq(node.shortId)}`)
     }
-    if (node.fingerprint) lines.push(`  client-fingerprint: ${node.fingerprint}`)
+    if (node.fingerprint) lines.push(`  client-fingerprint: ${safeEnum(node.fingerprint, FINGERPRINTS, 'chrome')}`)
     return lines.join('\n')
   }
 
@@ -1352,7 +1403,7 @@ function nodeToYaml(node) {
     lines.push(`  uuid: ${yq(node.uuid)}`)
     lines.push('  alterId: 0')
     lines.push('  cipher: auto')
-    lines.push(`  network: ${node.network}`)
+    lines.push(`  network: ${safeEnum(node.network, NETWORKS, 'tcp')}`)
     if (node.network === 'ws') {
       lines.push('  ws-opts:')
       lines.push(`    path: ${yq(node.wsPath || '/')}`)
@@ -1400,7 +1451,7 @@ function nodeToYaml(node) {
   }
 
   if (node.type === 'ss') {
-    lines.push(`  cipher: ${node.cipher}`)
+    lines.push(`  cipher: ${safeEnum(node.cipher, CIPHERS, 'aes-256-gcm')}`)
     lines.push(`  password: ${yq(node.password)}`)
     if (node.udp) lines.push('  udp: true')
     return lines.join('\n')

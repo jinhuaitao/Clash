@@ -218,7 +218,28 @@ npx wrangler dev
 
 本地调试不需要预先准备令牌。想测试「部署恢复令牌」流程时，把 `ADMIN_TOKEN` 写进 `.dev.vars`（该文件已被 git 忽略）；`AUTH_TOKEN` 可以在设置页生成。
 
-`package.json` 里只有 `build` / `deploy` / `tail` 三个脚本，不引用任何本地工具。如果你本地保留了 `test/` 目录（不随仓库分发），可以直接用 node 运行：
+`package.json` 里只有 `check` / `build` / `deploy` / `tail` 四个脚本，不引用任何本地工具。
+
+`npm run check` 是一个零依赖的静态检查器（`scripts/check.mjs`），专门拦「语法合法、运行时才炸」的问题：
+
+| 规则 | 拦什么 |
+| --- | --- |
+| `use-before-declare` | `var` 提升后读属性抛 TypeError、`let/const` 的 TDZ |
+| `unknown-el` | `el.xxx` 从未在 `cacheElements()` 里赋值（运行时是 undefined） |
+| `missing-id` / `duplicate-id` | JS 引用了不存在的 id、HTML 里 id 重复 |
+| `missing-error-anchor` | 校验 key 没有对应的 `data-error`，字段不会标红 |
+| `duplicate-error-anchor` | 同一 key 有多个锚点，`$()` 只取第一个，跨表单会标错字段 |
+| `class-without-style` / `unused-class` | 用了但没样式、定义了但没人用 |
+| `duplicate-binding` / `empty-catch` | 同一事件重复绑定、异常被静默吞掉 |
+
+`npm run build` 会先跑一遍 `check --strict`，有 error 级问题直接中断构建，不会把坏产物发出去。检查器本身带自测：
+
+```bash
+npm run check            # 检查当前代码
+npm run check:selftest   # 验证检查器能真的抓到这些问题
+```
+
+如果你本地保留了 `test/` 目录（不随仓库分发），可以直接用 node 运行：
 
 ```bash
 node build.mjs && node test/server.mjs      # 本地服务器，内存 KV，默认 127.0.0.1:8787
@@ -320,6 +341,26 @@ node build.mjs && node test/worker.test.mjs # 接口 / 安全回归测试
 
 ## 更新日志
 
+### v2.6.2
+
+**修复**
+
+- 修复节点编辑抽屉打不开：`openEditor()` 里端口回填写在了 `var preset` 声明之前，`var` 提升导致读 `preset.vlessPort` 抛 TypeError，新建与编辑同时失效。
+- 修复脚本异常兜底失效：`el.toastStack` 从未赋值（实际是 `el.toasts`），错误提示一直是静默的。
+- 修复表单错误标错位置：`wsPath` / `grpcService` 被 vless 与 vmess 共用同一个 `data-error` 锚点，而 `$()` 只取第一个，vmess 的报错会标到 vless 的隐藏字段上。vmess 改用 `vmWsPath` / `vmGrpcService`，并补齐四个缺失的锚点。
+- 修复「Reality 仅支持 TCP」的错误提示没有落点，改为标红传输方式字段。
+- 修复保存遇 409 冲突时直接关闭抽屉、已填内容全部丢失：现在保留表单并提示「再次保存即可覆盖」。
+- 修复批量修改分组失败时下拉框已复位、节点却没移动：失败时保留下拉选择，可直接重试。
+
+**加固**
+
+- `bindEvents()` 里 50+ 处裸 `el.X.addEventListener` 统一收口到 `on()`，单个元素缺失不再让后续所有按钮一起失效。
+- 新增全局 `error` / `unhandledrejection` 兜底，脚本异常会直接弹提示并打到控制台，不再「点了没反应」。
+- 订阅 YAML 渲染增加最后一道防线：`type` / `network` / `flow` / `fingerprint` / `cipher` / `port` 只接受白名单值，非法节点整条跳过；策略组只引用实际渲染出来的节点，避免 Clash 报 `proxy not found`。KV 里存在旧版本或手工写入的脏数据时不会再破坏 YAML 结构。
+- 用户库解析失败（`corrupted`）时禁止通过 `/api/setup` 重新初始化，防止任何访问者覆盖原数据抢占管理员；恢复需由持有 KV 写权限的人删除 `users` 记录。
+- 订阅路径（`/?token=`）增加独立限流（240 次/分钟/IP），与 `/api/*` 的 120 次分开计数，不影响客户端周期性刷新。
+- 新增零依赖静态检查器 `scripts/check.mjs` 与自测，`npm run build` 前置 `check --strict`，把「声明前使用」「el 缓存缺失」「错误锚点缺失/重复」这类语法合法、运行时才炸的问题拦在构建期。
+
 ### v2.6.1
 
 - 设置页「VLESS 默认参数」新增**默认端口**：新建 VLESS 节点时自动填入，留空回落到 443；接口同步校验 1–65535。
@@ -383,5 +424,6 @@ node build.mjs && node test/worker.test.mjs # 接口 / 安全回归测试
 - 订阅令牌只用于拉取订阅，不能登录控制台；修改设置页中的令牌后旧订阅链接立即失效。
 - 订阅接口返回 `access-control-allow-origin: *` 以便各类客户端拉取；令牌即凭据，泄露后请立刻更换 Secret 或设置页令牌。
 - 控制台页面带 CSP（`script-src 'nonce-…'`、`frame-ancestors 'none'`）与 `noindex`，不会进入搜索引擎。
-- 管理接口（`/api/*`）内置轻量限流：同一出口 IP 每分钟最多 120 次请求；登录失败另有按 IP + 用户名的限流（10 分钟 8 次）。Worker 内存按 isolate 隔离，这是尽力而为的防护；如需严格限流，可在 Cloudflare 控制台为该 Worker 添加边缘 Rate Limiting 规则（路径匹配 `/api/*`，建议阈值 60 次/分钟），与内置限流叠加生效。
+- 管理接口（`/api/*`）内置轻量限流：同一出口 IP 每分钟最多 120 次请求；订阅路径（`/?token=`）单独计数，每分钟最多 240 次；登录失败另有按 IP + 用户名的限流（10 分钟 8 次）。Worker 内存按 isolate 隔离，这是尽力而为的防护；如需严格限流，可在 Cloudflare 控制台为该 Worker 添加边缘 Rate Limiting 规则（路径匹配 `/api/*`，建议阈值 60 次/分钟），与内置限流叠加生效。
+- 如果 KV 里的用户记录损坏（控制台提示「用户数据已损坏」），`/api/setup` 会拒绝自动初始化，以免任何访问者覆盖原数据并抢占管理员。恢复方式是：在 Cloudflare 控制台的 KV 中删除 `users` 记录后重新打开 `/admin` 创建账号，或配置 `ADMIN_TOKEN` 作为恢复通道。
 - 定期用「导出备份」保存一份 JSON 到本地：KV 数据只存在云端，误删或账号异常时可凭备份恢复。

@@ -1429,8 +1429,11 @@
       rerenderOnError: true
     }).then(function (ok) {
       setBulkBusy(false);
-      el.bulkRegion.value = '';
-      if (ok) clearSelection();
+      // 失败时保留下拉选择，方便用户直接重试
+      if (ok) {
+        el.bulkRegion.value = '';
+        clearSelection();
+      }
     });
   }
 
@@ -2207,7 +2210,14 @@
       }
       if (err.status === 409) {
         toast(err.message, 'error');
-        if (opts.form) closeDrawer();
+        // 保留抽屉与已填内容，只同步最新 rev：用户再点一次保存即可覆盖，不必重填
+        if (opts.form) {
+          el.formGlobalError.textContent = err.message + '。当前填写的内容已保留，确认后再次保存即可覆盖。';
+          el.formGlobalError.hidden = false;
+          el.formGlobalError.scrollIntoView({ block: 'nearest' });
+          await reloadConfig();
+          return false;
+        }
         await reloadConfig();
         return false;
       }
@@ -3524,7 +3534,7 @@
       var network = segmentValue(el.networkBox) || 'tcp';
       var reality = getSwitch(el.fieldReality);
       if (reality && network !== 'tcp') {
-        errors.push({ key: 'reality', message: 'Reality 仅支持 TCP 传输' });
+        errors.push({ key: 'network', message: 'Reality 仅支持 TCP 传输' });
       }
       node.uuid = uuid.toLowerCase();
       node.network = network;
@@ -3555,11 +3565,11 @@
       node.servername = optionalHost(el.vmSni.value, 'vmServername', 'SNI');
       node.udp = getSwitch(el.vmUdp);
       if (vmNetwork === 'ws') {
-        node.wsPath = optionalText(el.vmWsPath.value, 'wsPath', 'WS Path') || '/';
+        node.wsPath = optionalText(el.vmWsPath.value, 'vmWsPath', 'WS Path') || '/';
         node.wsHost = optionalHost(el.vmWsHost.value, 'vmWsHost', 'WS Host');
       }
       if (vmNetwork === 'grpc') {
-        node.grpcService = optionalError(el.vmGrpc.value, 'grpcService', 'gRPC 服务名', 64, errors);
+        node.grpcService = optionalError(el.vmGrpc.value, 'vmGrpcService', 'gRPC 服务名', 64, errors);
       }
     } else if (type === 'trojan') {
       node.password = requiredError(el.trPassword.value, 'trPassword', '密码', 128, errors);
@@ -3587,7 +3597,7 @@
 
   function apiFieldKey(field) {
     var maps = {
-      vmess: { uuid: 'vmUuid', servername: 'vmServername', wsHost: 'vmWsHost' },
+      vmess: { uuid: 'vmUuid', servername: 'vmServername', wsHost: 'vmWsHost', wsPath: 'vmWsPath', grpcService: 'vmGrpcService' },
       trojan: { password: 'trPassword', sni: 'trSni' },
       hysteria2: { password: 'hyPassword', sni: 'hySni', up: 'hyUp', down: 'hyDown' },
       ss: { password: 'ssPassword' }
@@ -4098,23 +4108,29 @@
   }
 
   function bindEvents() {
-    el.loginForm.addEventListener('submit', submitAuth);
-    el.loginUsername.addEventListener('input', function () { showLoginError(''); });
-    el.loginPassword.addEventListener('input', function () { showLoginError(''); });
-    el.loginConfirm.addEventListener('input', function () { showLoginError(''); });
-    el.loginSetupToken.addEventListener('input', function () { showLoginError(''); });
-    el.loginToken.addEventListener('input', function () { showLoginError(''); });
-    el.loginPasswordReveal.addEventListener('click', function () {
+    /* 单个元素缺失不应中断整条绑定链：这里统一走 on()，元素为空时静默跳过 */
+    function on(target, type, handler, options) {
+      if (target) target.addEventListener(type, handler, options);
+      return target;
+    }
+
+    on(el.loginForm, 'submit', submitAuth);
+    on(el.loginUsername, 'input', function () { showLoginError(''); });
+    on(el.loginPassword, 'input', function () { showLoginError(''); });
+    on(el.loginConfirm, 'input', function () { showLoginError(''); });
+    on(el.loginSetupToken, 'input', function () { showLoginError(''); });
+    on(el.loginToken, 'input', function () { showLoginError(''); });
+    on(el.loginPasswordReveal, 'click', function () {
       var showing = el.loginPassword.type === 'text';
       el.loginPassword.type = showing ? 'password' : 'text';
       setRevealState(el.loginPasswordReveal, !showing, '密码');
     });
-    el.loginTokenReveal.addEventListener('click', function () {
+    on(el.loginTokenReveal, 'click', function () {
       var showing = el.loginToken.type === 'text';
       el.loginToken.type = showing ? 'password' : 'text';
       setRevealState(el.loginTokenReveal, !showing, '令牌');
     });
-    el.loginRecovery.addEventListener('click', function () {
+    on(el.loginRecovery, 'click', function () {
       renderAuthView(state.loginView === 'recovery' ? 'login' : 'recovery');
     });
 
@@ -4124,7 +4140,7 @@
     $$('[data-goto]').forEach(function (button) {
       button.addEventListener('click', function () { switchView(button.dataset.goto); });
     });
-    el.heroPreview.addEventListener('click', function () { switchView('preview'); });
+    on(el.heroPreview, 'click', function () { switchView('preview'); });
 
     [el.nodesAdd, el.heroAdd, el.emptyAdd].forEach(function (button) {
       if (button) button.addEventListener('click', function () { openEditor(null); });
@@ -4135,8 +4151,8 @@
     [el.nodesLinks, el.emptyLinks].forEach(function (button) {
       if (button) button.addEventListener('click', function () { openLinks('import'); });
     });
-    el.subCopy.addEventListener('click', copySubscription);
-    el.subReveal.addEventListener('click', function () {
+    on(el.subCopy, 'click', copySubscription);
+    on(el.subReveal, 'click', function () {
       state.subRevealed = !state.subRevealed;
       renderSubUrls();
     });
@@ -4145,15 +4161,15 @@
       button.addEventListener('click', toggleTheme);
     });
     if (el.themeMode) {
-      el.themeMode.addEventListener('click', function (event) {
+      on(el.themeMode, 'click', function (event) {
         var button = event.target.closest('[data-theme-mode]');
         if (button) setThemeMode(button.dataset.themeMode);
       });
     }
-    el.logout.addEventListener('click', function () { logout(''); });
-    el.mobileLogout.addEventListener('click', function () { logout(''); });
+    on(el.logout, 'click', function () { logout(''); });
+    on(el.mobileLogout, 'click', function () { logout(''); });
 
-    if (el.tokenOpenSettings) el.tokenOpenSettings.addEventListener('click', function () {
+    if (el.tokenOpenSettings) on(el.tokenOpenSettings, 'click', function () {
       switchView('settings');
       if (el.setAuthToken) {
         window.setTimeout(function () {
@@ -4162,7 +4178,7 @@
         }, 40);
       }
     });
-    if (el.emptySubBtn) el.emptySubBtn.addEventListener('click', function () { switchView('nodes'); });
+    if (el.emptySubBtn) on(el.emptySubBtn, 'click', function () { switchView('nodes'); });
 
     [el.storageCard, el.kvHelpSide, el.kvHelpBtn].forEach(function (button) {
       button.addEventListener('click', function () {
@@ -4173,17 +4189,17 @@
         }
       });
     });
-    el.kvCopyName.addEventListener('click', function () { copyText('SUB_KV', '变量名 SUB_KV 已复制'); });
+    on(el.kvCopyName, 'click', function () { copyText('SUB_KV', '变量名 SUB_KV 已复制'); });
 
-    el.nodeSearch.addEventListener('input', function () {
+    on(el.nodeSearch, 'input', function () {
       state.query = el.nodeSearch.value;
       renderNodeList();
     });
-    el.filterType.addEventListener('change', function () {
+    on(el.filterType, 'change', function () {
       state.filterType = el.filterType.value;
       renderNodeList();
     });
-    el.filterRegion.addEventListener('change', function () {
+    on(el.filterRegion, 'change', function () {
       state.filterRegion = el.filterRegion.value;
       renderNodeList();
     });
@@ -4191,7 +4207,7 @@
       button.addEventListener('click', resetFilters);
     });
 
-    el.nodeList.addEventListener('click', function (event) {
+    on(el.nodeList, 'click', function (event) {
       var pick = event.target.closest('[data-pick-id]');
       if (pick) {
         toggleSelection(pick.dataset.pickId, pick.checked, event.shiftKey);
@@ -4240,7 +4256,7 @@
       if (event.target.closest('button, input, .cell-check')) return;
       openEditor(row.dataset.id);
     });
-    el.nodeList.addEventListener('keydown', function (event) {
+    on(el.nodeList, 'keydown', function (event) {
       if (event.key !== 'Enter' && event.key !== ' ') return;
       var row = event.target.closest('.node-row');
       if (!row || event.target.closest('button, input, .cell-check')) return;
@@ -4249,10 +4265,10 @@
     });
 
     if (el.selectAll) {
-      el.selectAll.addEventListener('change', function () { selectAllVisible(el.selectAll.checked); });
+      on(el.selectAll, 'change', function () { selectAllVisible(el.selectAll.checked); });
     }
     if (el.bulkBar) {
-      el.bulkBar.addEventListener('click', function (event) {
+      on(el.bulkBar, 'click', function (event) {
         var button = event.target.closest('[data-bulk]');
         if (!button || button.disabled) return;
         if (button.dataset.bulk === 'enable') bulkSetEnabled(true);
@@ -4260,20 +4276,20 @@
         else if (button.dataset.bulk === 'delete') askBulkDelete();
       });
     }
-    if (el.bulkClear) el.bulkClear.addEventListener('click', clearSelection);
+    if (el.bulkClear) on(el.bulkClear, 'click', clearSelection);
     if (el.bulkRegion) {
-      el.bulkRegion.addEventListener('change', function () {
+      on(el.bulkRegion, 'change', function () {
         if (el.bulkRegion.value) bulkMoveRegion();
       });
     }
 
     if (el.rowMenu) {
-      el.rowMenu.addEventListener('click', function (event) {
+      on(el.rowMenu, 'click', function (event) {
         var item = event.target.closest('[data-menu]');
         if (!item || item.disabled) return;
         performRowMenu(item.dataset.menu);
       });
-      el.rowMenu.addEventListener('keydown', function (event) {
+      on(el.rowMenu, 'keydown', function (event) {
         var items = $$('.menu-item:not([disabled])', el.rowMenu);
         if (!items.length) return;
         var index = items.indexOf(document.activeElement);
@@ -4306,7 +4322,7 @@
       });
     }
 
-    el.recentNodes.addEventListener('click', function (event) {
+    on(el.recentNodes, 'click', function (event) {
       var button = event.target.closest('[data-edit-id]');
       if (button) openEditor(button.dataset.editId);
     });
@@ -4320,21 +4336,21 @@
       });
     });
 
-    el.nodeForm.addEventListener('submit', submitForm);
-    el.nodeForm.addEventListener('input', clearFieldError);
-    el.nodeForm.addEventListener('change', clearFieldError);
+    on(el.nodeForm, 'submit', submitForm);
+    on(el.nodeForm, 'input', clearFieldError);
+    on(el.nodeForm, 'change', clearFieldError);
 
-    el.settingsForm.addEventListener('submit', saveSettings);
-    el.settingsForm.addEventListener('input', clearSettingsFieldError);
-    el.settingsForm.addEventListener('change', clearSettingsFieldError);
-    if (el.userAdd) el.userAdd.addEventListener('click', function () { openUserEditor('add'); });
-    if (el.userCancel) el.userCancel.addEventListener('click', closeUserEditor);
+    on(el.settingsForm, 'submit', saveSettings);
+    on(el.settingsForm, 'input', clearSettingsFieldError);
+    on(el.settingsForm, 'change', clearSettingsFieldError);
+    if (el.userAdd) on(el.userAdd, 'click', function () { openUserEditor('add'); });
+    if (el.userCancel) on(el.userCancel, 'click', closeUserEditor);
     if (el.userForm) {
-      el.userForm.addEventListener('submit', submitUserForm);
-      el.userForm.addEventListener('input', clearUserFieldError);
+      on(el.userForm, 'submit', submitUserForm);
+      on(el.userForm, 'input', clearUserFieldError);
     }
     if (el.userList) {
-      el.userList.addEventListener('click', function (event) {
+      on(el.userList, 'click', function (event) {
         var reset = event.target.closest('[data-user-reset]');
         if (reset) {
           openUserEditor('reset', reset.dataset.userReset);
@@ -4344,7 +4360,7 @@
         if (remove && !remove.disabled) askDeleteUser(remove.dataset.userDelete);
       });
     }
-    el.settingsClear.addEventListener('click', function () {
+    on(el.settingsClear, 'click', function () {
       setField(el.setUuid, '');
       setField(el.setPbk, '');
       setField(el.setSid, '');
@@ -4353,13 +4369,13 @@
       clearSettingsErrors();
       toast('已清空 VLESS 预设，点击「保存设置」后生效', 'info');
     });
-    if (el.genAuthToken) el.genAuthToken.addEventListener('click', function () {
+    if (el.genAuthToken) on(el.genAuthToken, 'click', function () {
       setField(el.setAuthToken, generatePassword(32));
       clearSettingsErrors();
       el.setAuthToken.focus();
       el.setAuthToken.select();
     });
-    if (el.copyAuthToken) el.copyAuthToken.addEventListener('click', function () {
+    if (el.copyAuthToken) on(el.copyAuthToken, 'click', function () {
       var token = String(el.setAuthToken.value || '').trim();
       if (!token) {
         toast('当前没有可复制的订阅令牌', 'error');
@@ -4367,7 +4383,7 @@
       }
       copyText(token, '订阅令牌已复制');
     });
-    el.typeGrid.addEventListener('click', function (event) {
+    on(el.typeGrid, 'click', function (event) {
       var button = event.target.closest('[data-type]');
       if (!button) return;
       state.formType = button.dataset.type;
@@ -4402,32 +4418,32 @@
     $('#gen-hy-password').addEventListener('click', function () { setField(el.hyPassword, generatePassword()); });
     $('#gen-ss-password').addEventListener('click', function () { setField(el.ssPassword, generatePassword()); });
 
-    el.genericOk.addEventListener('click', function () {
+    on(el.genericOk, 'click', function () {
       var callback = confirmCallback;
       confirmCallback = null;
       if (callback) callback();
     });
 
-    el.nodesExport.addEventListener('click', exportBackup);
-    el.nodesImport.addEventListener('click', function () {
+    on(el.nodesExport, 'click', exportBackup);
+    on(el.nodesImport, 'click', function () {
       if (ensureWritable()) el.importFile.click();
     });
-    el.importFile.addEventListener('change', function () {
+    on(el.importFile, 'change', function () {
       var file = el.importFile.files && el.importFile.files[0];
       el.importFile.value = '';
       if (file) importBackupFile(file);
     });
-    el.previewRefresh.addEventListener('click', function () { loadPreview(true); });
-    el.previewCopy.addEventListener('click', copyYaml);
-    el.previewDownload.addEventListener('click', downloadYaml);
+    on(el.previewRefresh, 'click', function () { loadPreview(true); });
+    on(el.previewCopy, 'click', copyYaml);
+    on(el.previewDownload, 'click', downloadYaml);
 
     if (el.previewSearch) {
-      el.previewSearch.addEventListener('input', function () {
+      on(el.previewSearch, 'input', function () {
         state.previewQuery = el.previewSearch.value;
         window.clearTimeout(state.previewSearchTimer);
         state.previewSearchTimer = window.setTimeout(refreshPreviewSearch, 160);
       });
-      el.previewSearch.addEventListener('keydown', function (event) {
+      on(el.previewSearch, 'keydown', function (event) {
         if (event.key === 'Enter') {
           event.preventDefault();
           movePreviewHit(event.shiftKey ? -1 : 1);
@@ -4441,26 +4457,26 @@
         }
       });
     }
-    if (el.previewSearchPrev) el.previewSearchPrev.addEventListener('click', function () { movePreviewHit(-1); });
-    if (el.previewSearchNext) el.previewSearchNext.addEventListener('click', function () { movePreviewHit(1); });
+    if (el.previewSearchPrev) on(el.previewSearchPrev, 'click', function () { movePreviewHit(-1); });
+    if (el.previewSearchNext) on(el.previewSearchNext, 'click', function () { movePreviewHit(1); });
 
     (el.linksTabs || []).forEach(function (button) {
       button.addEventListener('click', function () { setLinksTab(button.dataset.tab); });
     });
     if (el.linksInput) {
-      el.linksInput.addEventListener('input', function () {
+      on(el.linksInput, 'input', function () {
         window.clearTimeout(state.linksTimer);
         state.linksTimer = window.setTimeout(parseLinksInput, 200);
       });
     }
     if (el.linksRegion) {
-      el.linksRegion.addEventListener('change', function () {
+      on(el.linksRegion, 'change', function () {
         if (el.linksInput.value.trim()) parseLinksInput();
         else renderLinksResults();
       });
     }
     if (el.linksPreview) {
-      el.linksPreview.addEventListener('click', function (event) {
+      on(el.linksPreview, 'click', function (event) {
         var button = event.target.closest('[data-link-remove]');
         if (!button) return;
         var index = Number(button.dataset.linkRemove);
@@ -4470,9 +4486,9 @@
         }
       });
     }
-    if (el.linksConfirm) el.linksConfirm.addEventListener('click', importLinks);
-    if (el.linksCopyAll) el.linksCopyAll.addEventListener('click', function () { copyText(state.linksExportText, '链接清单已复制'); });
-    if (el.linksDownload) el.linksDownload.addEventListener('click', downloadLinks);
+    if (el.linksConfirm) on(el.linksConfirm, 'click', importLinks);
+    if (el.linksCopyAll) on(el.linksCopyAll, 'click', function () { copyText(state.linksExportText, '链接清单已复制'); });
+    if (el.linksDownload) on(el.linksDownload, 'click', downloadLinks);
 
     document.addEventListener('keydown', function (event) {
       var tag = (event.target.tagName || '').toLowerCase();
@@ -4527,6 +4543,21 @@
     }
     initAuth();
   }
+
+  /* 脚本异常兜底：避免「点了没反应」却毫无提示，把原因直接暴露到界面与控制台 */
+  window.addEventListener('error', function (event) {
+    var message = (event && event.message) || '未知脚本错误';
+    if (typeof console !== 'undefined' && console.error) {
+      console.error('[transit-hub]', message, event && event.filename, event && event.lineno);
+    }
+    if (el.toasts) toast('页面脚本异常：' + message, 'error');
+  });
+  window.addEventListener('unhandledrejection', function (event) {
+    var reason = event && event.reason;
+    var message = reason && reason.message ? reason.message : String(reason || '未知异常');
+    if (typeof console !== 'undefined' && console.error) console.error('[transit-hub]', message);
+    if (el.toasts) toast('请求异常：' + message, 'error');
+  });
 
   init();
 })();

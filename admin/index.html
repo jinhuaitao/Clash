@@ -803,6 +803,7 @@
               <button type="button" data-value="ws">WebSocket</button>
               <button type="button" data-value="grpc">gRPC</button>
             </div>
+            <div class="field-error" data-error="network"></div>
           </div>
           <div class="switch-row">
             <div class="switch-copy"><b>TLS 加密</b><small>通过 TLS 与 SNI 建立加密连接</small></div>
@@ -861,6 +862,7 @@
             <div class="field">
               <label for="f-wspath">WS Path</label>
               <input id="f-wspath" placeholder="/" spellcheck="false" autocomplete="off">
+              <div class="field-error" data-error="wsPath"></div>
             </div>
             <div class="field">
               <label for="f-wshost">WS Host</label>
@@ -871,6 +873,7 @@
           <div class="field" id="grpc-fields" hidden>
             <label for="f-grpc">gRPC 服务名</label>
             <input id="f-grpc" placeholder="可留空" spellcheck="false" autocomplete="off">
+            <div class="field-error" data-error="grpcService"></div>
           </div>
           <div class="switch-row">
             <div class="switch-copy"><b>UDP 转发</b><small>允许通过该节点转发 UDP 流量</small></div>
@@ -909,6 +912,7 @@
             <div class="field">
               <label for="f-vm-wspath">WS Path</label>
               <input id="f-vm-wspath" placeholder="/" spellcheck="false" autocomplete="off">
+              <div class="field-error" data-error="vmWsPath"></div>
             </div>
             <div class="field">
               <label for="f-vm-wshost">WS Host</label>
@@ -919,6 +923,7 @@
           <div class="field" id="vm-grpc-fields" hidden>
             <label for="f-vm-grpc">gRPC 服务名</label>
             <input id="f-vm-grpc" placeholder="可留空" spellcheck="false" autocomplete="off">
+            <div class="field-error" data-error="vmGrpcService"></div>
           </div>
           <div class="switch-row">
             <div class="switch-copy"><b>UDP 转发</b><small>允许通过该节点转发 UDP 流量</small></div>
