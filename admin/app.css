@@ -1758,3 +1758,65 @@ mark.code-hit.is-current { background: #facc15; color: #1e293b; box-shadow: 0 0 
   .inline-field .select-wrap { flex: 1; }
   .inline-field select { width: 100%; }
 }
+
+/* ---- user management (v2.5.0) ---- */
+
+.users-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.users-head > div { min-width: 0; }
+.users-head .btn { flex: none; margin-top: 2px; }
+.user-list { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 12px; background: var(--panel-soft); overflow: hidden; }
+.user-row { display: flex; align-items: center; gap: 12px; padding: 11px 13px; border-top: 1px solid var(--line); }
+.user-row:first-child { border-top: 0; }
+.user-avatar { display: grid; place-items: center; width: 34px; height: 34px; flex: none; border-radius: 10px; background: var(--accent-soft); color: var(--accent-text); font-size: 13px; font-weight: 700; letter-spacing: .02em; }
+.user-main { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.user-name { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 12.5px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.user-badge { flex: none; padding: 1px 7px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-text); font-size: 9.5px; font-weight: 650; letter-spacing: .02em; }
+.user-sub { font-size: 10.5px; color: var(--faint); }
+.user-actions { display: flex; align-items: center; gap: 4px; flex: none; }
+.user-actions .btn { height: 30px; padding: 0 9px; font-size: 11px; }
+.user-delete { width: 30px; padding: 0; justify-content: center; color: var(--faint); }
+.user-delete:hover:not(:disabled) { background: var(--danger-soft); color: var(--danger); }
+.user-delete:disabled { opacity: .34; }
+.user-delete .icon { width: 14px; height: 14px; }
+.user-empty { padding: 26px 16px; text-align: center; font-size: 11.5px; line-height: 1.6; color: var(--faint); }
+.user-empty.is-error { color: var(--danger); }
+.user-editor { margin-top: 14px; padding: 16px 16px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel-soft); }
+.user-editor-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; margin-bottom: 12px; }
+.user-editor-head b { font-size: 12.5px; font-weight: 650; color: var(--text); }
+.user-editor-head span { font-size: 10.5px; color: var(--faint); line-height: 1.5; }
+.user-editor .field { margin-bottom: 12px; }
+.user-editor .field > label { font-size: 11px; }
+.user-editor input { height: 40px; font-size: 12.5px; background: var(--panel); }
+.user-editor .field-row { gap: 10px; }
+.user-editor .field-row .field { margin-bottom: 0; }
+.user-editor > .field-error:not(:empty) { display: block; margin-top: 8px; }
+.user-editor-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.auth-link,
+.auth-help .auth-link { display: block; margin-top: 6px; padding: 0; border: 0; background: none; color: var(--accent-text); font-size: 11px; font-weight: 600; line-height: 1.6; text-align: left; cursor: pointer; }
+.auth-link:hover { text-decoration: underline; text-underline-offset: 3px; }
+.auth-link[hidden] { display: none; }
+
+@media (max-width: 640px) {
+  .users-head { flex-wrap: wrap; gap: 10px; }
+  .users-head .btn { width: auto; margin-left: auto; margin-top: 0; }
+  .user-row { gap: 10px; padding: 10px 11px; }
+  .user-main { flex: 1 1 auto; }
+  .user-actions { width: auto; padding-left: 0; margin-left: auto; }
+  .user-actions .btn { padding: 0 8px; }
+  .user-actions .btn:first-child { flex: none; }
+  .user-editor { padding: 14px; }
+}
+
+@media (max-width: 400px) {
+  .user-badge,
+  .user-sub { display: none; }
+  .user-row { gap: 8px; }
+  .user-avatar { width: 30px; height: 30px; border-radius: 9px; font-size: 12px; }
+  .user-actions .btn { padding: 0 7px; font-size: 10.5px; }
+  .user-delete { width: 28px; padding: 0; }
+}
+
+@media (max-width: 480px) {
+  .user-editor .field-row { grid-template-columns: 1fr; gap: 12px; }
+  .user-editor-actions .btn { flex: 1; }
+}

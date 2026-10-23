@@ -2,11 +2,13 @@
   'use strict';
 
   var STORAGE_KEY = 'th.admin.token';
+  var USERNAME_KEY = 'th.username';
   var THEME_KEY = 'th.theme';
   var MAIN_GROUP = '🌍选择节点';
   var MAX_NODES = 300;
   var MAX_TOTAL_GB = 1048576;
   var THEME_MODES = ['system', 'light', 'dark'];
+  var MAX_USERS = 20;
   var FINGERPRINTS = ['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', 'random', 'randomized'];
   var SS_CIPHERS = ['aes-128-gcm', 'aes-256-gcm', 'chacha20-ietf-poly1305', 'xchacha20-ietf-poly1305'];
 
@@ -37,10 +39,10 @@
   var TAG_ORDER = ['chatgpt', 'google', 'youtube', 'telegram'];
 
   var APP_GROUPS = [
-    { key: 'chatgpt', name: '💬ChatGPT', bases: ['us'] },
-    { key: 'google', name: 'ⒼGoogle', bases: ['us', 'jp', 'relay'] },
-    { key: 'youtube', name: '📺YOUTUBE', bases: ['us', 'jp', 'hk', 'relay'] },
-    { key: 'telegram', name: '📲 电报信息', bases: ['all'] }
+    { key: 'chatgpt', name: '💬ChatGPT' },
+    { key: 'google', name: 'ⒼGoogle' },
+    { key: 'youtube', name: '📺YOUTUBE' },
+    { key: 'telegram', name: '📲 电报信息' }
   ];
 
   var RESERVED_NAMES = new Set([
@@ -63,9 +65,19 @@
 
   var state = {
     token: '',
+    authInfo: null,
+    loginView: 'login',
     config: null,
     meta: null,
     rev: 0,
+    users: null,
+    usersRev: 0,
+    currentUserId: null,
+    usersLoading: false,
+    userFormMode: 'add',
+    userFormId: null,
+    userDeletingId: null,
+    userBusy: false,
     view: 'overview',
     query: '',
     filterType: 'all',
@@ -251,11 +263,27 @@
     el.authScreen = $('#auth-screen');
     el.app = $('#app');
     el.loginForm = $('#login-form');
+    el.authEyebrow = $('#auth-eyebrow');
+    el.authTitle = $('#auth-title');
+    el.authSub = $('#auth-sub');
+    el.loginUsername = $('#login-username');
+    el.loginPassword = $('#login-password');
+    el.loginConfirm = $('#login-confirm');
+    el.loginSetupToken = $('#login-setup-token');
     el.loginToken = $('#login-token');
-    el.loginReveal = $('#login-reveal');
+    el.fieldUsername = $('#field-username');
+    el.fieldPassword = $('#field-password');
+    el.fieldConfirm = $('#field-confirm');
+    el.fieldSetupToken = $('#field-setup-token');
+    el.fieldToken = $('#field-token');
+    el.loginPasswordReveal = $('#login-password-reveal');
+    el.loginTokenReveal = $('#login-token-reveal');
+    el.loginRecovery = $('#login-recovery');
+    el.loginNote = $('#login-note');
+    el.loginHelp = $('#login-help');
     el.loginError = $('#login-error');
     el.loginBtn = $('#login-btn');
-    el.loginLabel = $('.btn-label', el.loginBtn);
+    el.loginLabel = $('#login-label');
     el.loginSpinner = $('.spinner', el.loginBtn);
 
     el.navItems = $$('.nav-item[data-view]');
@@ -300,7 +328,6 @@
     el.sysRev = $('#sys-rev');
     el.sysUpdated = $('#sys-updated');
     el.sysHealth = $('#sys-health');
-    el.authHint = $('#auth-hint');
 
     el.storageCard = $('#storage-card');
     el.storageDot = $('#storage-dot');
@@ -379,6 +406,19 @@
     el.fieldShowMain = $('#f-show-main');
 
     el.settingsForm = $('#settings-form');
+    el.usersPanel = $('#users-panel');
+    el.userList = $('#user-list');
+    el.userAdd = $('#user-add');
+    el.userForm = $('#user-form');
+    el.userFormTitle = $('#user-form-title');
+    el.userFormSub = $('#user-form-sub');
+    el.userUsername = $('#user-username');
+    el.userPassword = $('#user-password');
+    el.userPassword2 = $('#user-password2');
+    el.userCancel = $('#user-cancel');
+    el.userSave = $('#user-save');
+    el.userSaveLabel = $('#user-save-label');
+    el.userSaveSpinner = $('#user-save-spinner');
     el.setAuthToken = $('#set-auth-token');
     el.authTokenNote = $('#auth-token-note');
     el.genAuthToken = $('#gen-auth-token');
@@ -539,10 +579,13 @@
   /* ------------------------------------------------------------------ */
 
   function setLoginBusy(busy) {
-    el.loginBtn.disabled = busy;
+    el.loginBtn.disabled = busy || (state.loginView === 'setup' && state.authInfo && state.authInfo.kv === false);
     el.loginBtn.classList.toggle('is-loading', busy);
     el.loginSpinner.hidden = !busy;
-    el.loginLabel.textContent = busy ? '正在验证…' : '进入控制台';
+    var labels = { login: '登录', setup: '创建管理员并进入', recovery: '使用恢复令牌' };
+    el.loginLabel.textContent = busy
+      ? (state.loginView === 'setup' ? '正在创建…' : '正在验证…')
+      : (labels[state.loginView] || '登录');
   }
 
   function showLoginError(message) {
@@ -550,39 +593,273 @@
     el.loginError.hidden = !message;
   }
 
-  async function authenticate(token, fromStorage) {
-    var clean = String(token || '').trim();
-    if (!clean) {
-      showLoginError('请输入管理令牌以继续。');
-      el.loginToken.focus();
-      return false;
+  async function publicRequest(path, options) {
+    var opts = options || {};
+    var headers = {};
+    if (opts.body !== undefined) headers['content-type'] = 'application/json';
+    if (opts.token) headers.authorization = 'Bearer ' + opts.token;
+    var response;
+    try {
+      response = await fetch(path, {
+        method: opts.method || 'GET',
+        headers: headers,
+        body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+        cache: 'no-store'
+      });
+    } catch (err) {
+      throw new ApiError('网络请求失败，请检查连接后重试', 0);
     }
-    setLoginBusy(true);
+    var data = await safeJson(response);
+    if (!response.ok) {
+      throw new ApiError(
+        (data && data.error) || ('请求失败（HTTP ' + response.status + '）'),
+        response.status,
+        data,
+        data && data.field
+      );
+    }
+    return data || {};
+  }
+
+  function setRevealState(button, revealed, label) {
+    var use = button ? $('use', button) : null;
+    if (use) use.setAttribute('href', revealed ? '#i-eye-off' : '#i-eye');
+    if (button) button.setAttribute('aria-label', (revealed ? '隐藏' : '显示') + (label || '内容'));
+  }
+
+  function renderAuthView(view) {
+    state.loginView = view;
+    var info = state.authInfo || {};
+    var setup = view === 'setup';
+    var recovery = view === 'recovery';
     showLoginError('');
-    state.token = clean;
+
+    el.authEyebrow.textContent = setup ? 'First Run' : (recovery ? 'Recovery' : 'Admin Access');
+    el.authTitle.textContent = setup ? '初始化控制台' : (recovery ? '恢复访问' : '登录控制台');
+    el.authSub.textContent = setup
+      ? '创建第一个管理员账号，账号密码会保存在你的 KV 中。'
+      : (recovery ? '使用部署时配置的 ADMIN_TOKEN 临时进入控制台。' : '使用管理员账号登录，账号密码保存在你的 KV 中。');
+
+    el.fieldUsername.hidden = recovery;
+    el.fieldPassword.hidden = recovery;
+    el.fieldConfirm.hidden = !setup;
+    el.fieldToken.hidden = !recovery;
+    el.fieldSetupToken.hidden = !(setup && info.setupLocked);
+    el.loginRecovery.hidden = setup || !info.recovery;
+    el.loginRecovery.textContent = recovery ? '返回账号登录' : '使用部署恢复令牌';
+    el.loginPassword.setAttribute('autocomplete', setup ? 'new-password' : 'current-password');
+
+    var note = $('span', el.loginNote);
+    if (note) {
+      note.textContent = setup
+        ? '密码只保存为不可逆哈希，不会明文写入 KV。'
+        : (recovery ? '恢复令牌来自环境变量 ADMIN_TOKEN，日常登录请使用账号密码。' : '登录状态仅保存在当前标签页，关闭浏览器后自动退出。');
+    }
+
+    if (setup) {
+      if (!info.kv) {
+        el.loginHelp.textContent = '尚未绑定 SUB_KV，无法保存管理员账号，请先完成 KV 绑定。';
+      } else if (info.setupLocked) {
+        el.loginHelp.textContent = '该实例已配置 ADMIN_TOKEN，需填写恢复令牌才能完成初始化。';
+      } else if (info.corrupted) {
+        el.loginHelp.textContent = '检测到用户数据损坏，继续初始化会覆盖损坏的账号数据。';
+      } else {
+        el.loginHelp.textContent = '初始化完成前，任何访问者都可以创建管理员，请在部署后尽快完成。';
+      }
+    } else if (recovery) {
+      el.loginHelp.textContent = '恢复令牌用于忘记密码或恢复访问，不会取代日常账号登录。';
+    } else {
+      el.loginHelp.textContent = '忘记密码时，可由其他管理员在设置页重置。';
+    }
+
+    if (!recovery && !el.loginUsername.value) {
+      el.loginUsername.value = storageGet('local', USERNAME_KEY) || '';
+    }
+    if (recovery) {
+      el.loginPassword.value = '';
+      el.loginPassword.type = 'password';
+      el.loginConfirm.value = '';
+      setRevealState(el.loginPasswordReveal, false, '密码');
+    }
+    if (!recovery) {
+      el.loginToken.type = 'password';
+      setRevealState(el.loginTokenReveal, false, '令牌');
+    }
+    if (!setup) {
+      el.loginConfirm.value = '';
+      el.loginSetupToken.value = '';
+    }
+
+    setLoginBusy(false);
+    if (!el.authScreen.hidden) {
+      var target = setup || !recovery ? el.loginUsername : el.loginToken;
+      window.setTimeout(function () { target.focus({ preventScroll: true }); }, 40);
+    }
+  }
+
+  function authErrorFocus(field) {
+    if (field === 'username') el.loginUsername.focus();
+    else if (field === 'password' || field === 'confirm') el.loginPassword.focus();
+    else if (field === 'setupToken') el.loginSetupToken.focus();
+    else if (state.loginView === 'recovery') el.loginToken.focus();
+  }
+
+  async function finishLogin(token, username) {
+    state.token = token;
+    var data = await request('/api/config');
+    if (!data || !data.config || !Array.isArray(data.config.nodes)) {
+      throw new ApiError('接口返回数据异常，请确认 Worker 版本是否正确', 0);
+    }
+    storageSet('session', STORAGE_KEY, token);
+    storageSet('local', USERNAME_KEY, (data.meta && data.meta.username) || username || '');
+    if (state.authInfo) state.authInfo.needsSetup = false;
+    applyConfig(data);
+    enterApp();
+  }
+
+  async function submitAuth(event) {
+    if (event) event.preventDefault();
+    if (state.loginView === 'recovery') return recoverWithToken();
+
+    var setup = state.loginView === 'setup';
+    var info = state.authInfo || {};
+    var username = String(el.loginUsername.value || '').trim();
+    var password = el.loginPassword.value || '';
+    showLoginError('');
+
+    if (!username) {
+      showLoginError('请输入用户名。');
+      el.loginUsername.focus();
+      return;
+    }
+    if (!password) {
+      showLoginError('请输入密码。');
+      el.loginPassword.focus();
+      return;
+    }
+    if (setup) {
+      if (password.length < 8) {
+        showLoginError('密码至少需要 8 个字符。');
+        el.loginPassword.focus();
+        return;
+      }
+      if (password !== el.loginConfirm.value) {
+        showLoginError('两次输入的密码不一致。');
+        el.loginConfirm.focus();
+        return;
+      }
+      if (info.setupLocked && !String(el.loginSetupToken.value || '').trim()) {
+        showLoginError('该实例已配置 ADMIN_TOKEN，请填写部署恢复令牌。');
+        el.loginSetupToken.focus();
+        return;
+      }
+    }
+
+    setLoginBusy(true);
+    try {
+      var data;
+      if (setup) {
+        data = await publicRequest('/api/setup', {
+          method: 'POST',
+          token: String(el.loginSetupToken.value || '').trim() || undefined,
+          body: { username: username, password: password }
+        });
+      } else {
+        data = await publicRequest('/api/login', {
+          method: 'POST',
+          body: { username: username, password: password }
+        });
+      }
+      if (!data || !data.token) throw new ApiError('登录响应异常，请稍后重试。', 0);
+      await finishLogin(data.token, username);
+    } catch (err) {
+      state.token = '';
+      storageRemove('session', STORAGE_KEY);
+      if (err.status === 401) {
+        showLoginError('用户名或密码不正确。');
+        if (!setup) {
+          el.loginPassword.focus();
+          el.loginPassword.select();
+        }
+      } else if (err.status === 409 && setup) {
+        await loadAuthInfo();
+      } else if (err.status === 403 && err.data && err.data.needsSetup) {
+        await loadAuthInfo();
+      } else {
+        showLoginError(err.message || '登录失败，请稍后重试。');
+        authErrorFocus(err.field);
+      }
+    } finally {
+      setLoginBusy(false);
+    }
+  }
+
+  async function recoverWithToken() {
+    var token = String(el.loginToken.value || '').trim();
+    if (!token) {
+      showLoginError('请输入部署恢复令牌。');
+      el.loginToken.focus();
+      return;
+    }
+    showLoginError('');
+    setLoginBusy(true);
+    state.token = token;
     try {
       var data = await request('/api/config');
       if (!data || !data.config || !Array.isArray(data.config.nodes)) {
         throw new ApiError('接口返回数据异常，请确认 Worker 版本是否正确', 0);
       }
-      storageSet('session', STORAGE_KEY, clean);
+      storageSet('session', STORAGE_KEY, token);
       applyConfig(data);
       enterApp();
-      return true;
     } catch (err) {
       state.token = '';
       storageRemove('session', STORAGE_KEY);
-      if (err.status === 401) {
-        showLoginError('令牌无效。请确认输入的是 ADMIN_TOKEN，或设置页 / 环境变量中的订阅令牌。');
-      } else {
-        showLoginError(err.message || '登录失败，请稍后重试。');
-      }
-      if (!fromStorage) {
-        el.loginToken.focus();
-        el.loginToken.select();
-      }
-      return false;
+      if (err.status === 401) showLoginError('恢复令牌无效。');
+      else showLoginError(err.message || '恢复失败，请稍后重试。');
+      el.loginToken.focus();
+      el.loginToken.select();
     } finally {
+      setLoginBusy(false);
+    }
+  }
+
+  async function loadAuthInfo() {
+    var info;
+    try {
+      info = await publicRequest('/api/auth');
+    } catch (err) {
+      state.authInfo = null;
+      renderAuthView('login');
+      showLoginError(err.message || '无法连接 Worker，请稍后刷新重试。');
+      return null;
+    }
+    state.authInfo = info;
+    renderAuthView(info.needsSetup ? 'setup' : 'login');
+    return info;
+  }
+
+  async function initAuth() {
+    setLoginBusy(true);
+    var info = await loadAuthInfo();
+    if (!info) return;
+
+    var saved = storageGet('session', STORAGE_KEY);
+    if (!saved) return;
+    state.token = saved;
+    try {
+      var data = await request('/api/config');
+      if (!data || !data.config || !Array.isArray(data.config.nodes)) {
+        throw new ApiError('接口返回数据异常，请确认 Worker 版本是否正确', 0);
+      }
+      applyConfig(data);
+      enterApp();
+    } catch (err) {
+      state.token = '';
+      storageRemove('session', STORAGE_KEY);
+      if (err.status && err.status !== 401) {
+        showLoginError(err.message || '载入配置失败，请稍后重试。');
+      }
       setLoginBusy(false);
     }
   }
@@ -590,6 +867,10 @@
   function enterApp() {
     el.authScreen.hidden = true;
     el.app.hidden = false;
+    state.users = null;
+    state.usersRev = 0;
+    state.usersLoading = false;
+    state.currentUserId = (state.meta && state.meta.userId) || null;
     state.view = 'overview';
     resetFilters();
     renderAll();
@@ -601,6 +882,11 @@
     state.config = null;
     state.meta = null;
     state.rev = 0;
+    state.users = null;
+    state.usersRev = 0;
+    state.currentUserId = null;
+    state.usersLoading = false;
+    state.userBusy = false;
     state.preview = '';
     state.previewDirty = true;
     state.previewPromise = null;
@@ -631,13 +917,25 @@
     closeModal('generic', true);
     closeModal('kv', true);
     closeModal('links', true);
+    closeUserEditor();
+    if (el.userList) el.userList.innerHTML = '';
     if (el.previewSearch) el.previewSearch.value = '';
     if (el.linksInput) el.linksInput.value = '';
     if (el.setAuthToken) el.setAuthToken.value = '';
     el.app.hidden = true;
     el.authScreen.hidden = false;
+    el.loginUsername.value = storageGet('local', USERNAME_KEY) || '';
+    el.loginPassword.value = '';
+    el.loginConfirm.value = '';
+    el.loginSetupToken.value = '';
     el.loginToken.value = '';
-    setLoginBusy(false);
+    el.loginPassword.type = 'password';
+    el.loginToken.type = 'password';
+    setRevealState(el.loginPasswordReveal, false, '密码');
+    setRevealState(el.loginTokenReveal, false, '令牌');
+    var view = state.authInfo && state.authInfo.needsSetup ? 'setup' : 'login';
+    renderAuthView(view);
+    showLoginError(message || '');
     el.subUrlText.textContent = '—';
     el.previewSubUrl.textContent = '—';
     el.yamlCode.innerHTML = '';
@@ -645,19 +943,18 @@
     el.codeSize.textContent = '0 KB';
     el.nodeList.innerHTML = '';
     document.body.classList.remove('has-bulk');
-    if (message) showLoginError(message);
-    else showLoginError('');
-    window.setTimeout(function () { el.loginToken.focus(); }, 60);
+    window.setTimeout(function () { el.loginUsername.focus(); }, 60);
   }
 
   function handleUnauthorized() {
-    logout('登录已失效，请重新输入管理令牌。');
+    logout('登录已失效，请重新登录。');
   }
 
   function applyConfig(data) {
     state.config = data.config;
     state.rev = Number(data.config.rev) || 0;
     state.meta = data.meta || {};
+    state.currentUserId = state.meta.userId || state.currentUserId;
     state.previewDirty = true;
   }
 
@@ -812,12 +1109,11 @@
     var kvMissing = !meta.kv || meta.readonly;
     el.sysKv.textContent = kvMissing ? '未绑定 · 只读' : '已连接';
     el.sysKv.className = 'kv-val ' + (kvMissing ? 'is-warning' : 'is-ok');
-    el.sysAuth.textContent = meta.authMode === 'dedicated'
-      ? '独立管理令牌'
-      : (meta.authSource === 'settings' ? '设置页订阅令牌' : (meta.authSource === 'environment' ? '环境变量订阅令牌' : '未配置'));
+    el.sysAuth.textContent = meta.authType === 'recovery'
+      ? '恢复令牌会话'
+      : (meta.username ? '账号 · ' + meta.username : '账号登录');
     el.sysRev.textContent = '#' + state.rev;
     el.sysUpdated.textContent = state.config.updatedAt ? formatFull(state.config.updatedAt) : '尚未保存';
-    el.authHint.hidden = meta.authMode === 'dedicated' || !meta.hasAuthToken;
 
     var healthy = !kvMissing && !meta.corrupted;
     el.sysHealth.textContent = meta.corrupted ? '需注意' : (kvMissing ? '只读' : '正常');
@@ -1301,7 +1597,10 @@
     if (view === 'preview' && (!state.preview || state.previewDirty)) loadPreview();
     if (view === 'nodes') renderNodeList();
     if (view === 'overview') renderOverview();
-    if (view === 'settings') renderSettings();
+    if (view === 'settings') {
+      renderSettings();
+      loadUsers();
+    }
     window.scrollTo(0, 0);
   }
 
@@ -1317,13 +1616,12 @@
     if (!el.authTokenNote) return;
     var meta = state.meta || {};
     var stored = !!(state.config && state.config.authToken);
-    var loginNote = meta.authMode === 'dedicated' ? '' : ' 未单独配置 ADMIN_TOKEN 时，也可用它登录控制台。';
     if (stored) {
-      el.authTokenNote.textContent = '当前使用设置页保存的令牌；保存新值会立即使旧令牌失效。' + loginNote;
+      el.authTokenNote.textContent = '当前使用设置页保存的令牌；保存新值会立即使旧令牌失效。该令牌仅用于订阅访问，不能登录控制台。';
     } else if (meta.authSource === 'environment') {
-      el.authTokenNote.textContent = '当前使用环境变量 AUTH_TOKEN；填写新令牌并保存后，改由设置页管理。' + loginNote;
+      el.authTokenNote.textContent = '当前使用环境变量 AUTH_TOKEN；填写新令牌并保存后，改由设置页管理。该令牌仅用于订阅访问，不能登录控制台。';
     } else {
-      el.authTokenNote.textContent = '当前尚未配置订阅令牌，填写并保存后订阅链接立即可用。' + loginNote;
+      el.authTokenNote.textContent = '当前尚未配置订阅令牌，填写并保存后订阅链接立即可用；该令牌不能用于登录控制台。';
     }
   }
 
@@ -1504,11 +1802,6 @@
       if (result.authToken) body.authToken = result.authToken;
       var data = await request('/api/config', { method: 'PUT', body: body });
       applyConfig(data);
-      if (data.meta && data.meta.authMode !== 'dedicated' && data.config.authToken) {
-        state.token = data.config.authToken;
-        storageSet('session', STORAGE_KEY, state.token);
-        el.loginToken.value = state.token;
-      }
       renderAll();
       renderSettings();
       toast(result.authToken
@@ -1531,6 +1824,319 @@
     } finally {
       state.mutating = false;
       setSettingsBusy(false);
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* users                                                               */
+  /* ------------------------------------------------------------------ */
+
+  function findUser(id) {
+    return (state.users || []).filter(function (user) { return user.id === id; })[0] || null;
+  }
+
+  function userInitial(name) {
+    var text = String(name || '?').trim();
+    return text ? text.charAt(0).toUpperCase() : '?';
+  }
+
+  function syncUserAddState() {
+    if (!el.userAdd) return;
+    var maxed = Array.isArray(state.users) && state.users.length >= MAX_USERS;
+    el.userAdd.disabled = maxed || (el.userForm && !el.userForm.hidden);
+    el.userAdd.title = maxed ? '最多只能创建 ' + MAX_USERS + ' 个用户' : '';
+  }
+
+  function applyUsersResponse(data) {
+    if (!data) return;
+    if (Array.isArray(data.users)) state.users = data.users;
+    state.usersRev = Number(data.rev) || 0;
+    if (data.currentUserId) state.currentUserId = data.currentUserId;
+    if (data.token) {
+      state.token = data.token;
+      storageSet('session', STORAGE_KEY, data.token);
+    }
+    renderUsers();
+  }
+
+  async function loadUsers(force) {
+    if (!state.config) return;
+    if (!force && Array.isArray(state.users)) {
+      renderUsers();
+      return;
+    }
+    if (state.usersLoading) return;
+    state.usersLoading = true;
+    if (!Array.isArray(state.users) || force) {
+      el.userList.innerHTML = '<div class="user-empty">正在载入账号…</div>';
+    }
+    try {
+      applyUsersResponse(await request('/api/users'));
+    } catch (err) {
+      if (err.status === 401) {
+        handleUnauthorized();
+        return;
+      }
+      el.userList.innerHTML = '<div class="user-empty is-error">' + esc(err.message || '账号加载失败，请稍后重试') + '</div>';
+    } finally {
+      state.usersLoading = false;
+    }
+  }
+
+  function renderUsers() {
+    if (!el.userList) return;
+    var users = Array.isArray(state.users) ? state.users : [];
+    if (!users.length) {
+      el.userList.innerHTML = '<div class="user-empty">还没有可用账号，请添加一个。</div>';
+      syncUserAddState();
+      return;
+    }
+    el.userList.innerHTML = users.map(function (user) {
+      var current = user.id === state.currentUserId;
+      var last = users.length <= 1;
+      var canDelete = !current && !last;
+      var created = user.createdAt ? formatShort(user.createdAt) : '';
+      var deleteTitle = current ? '不能删除当前登录账号' : '至少需要保留一个账号';
+      return '<div class="user-row' + (current ? ' is-current' : '') + '">' +
+        '<span class="user-avatar">' + esc(userInitial(user.username)) + '</span>' +
+        '<span class="user-main">' +
+          '<span class="user-name">' + esc(user.username) + (current ? '<span class="user-badge">当前账号</span>' : '') + '</span>' +
+          '<span class="user-sub">' + (created ? '创建于 ' + esc(created) + ' · ' : '') + '管理员</span>' +
+        '</span>' +
+        '<span class="user-actions">' +
+          '<button class="btn btn-quiet btn-sm" type="button" data-user-reset="' + esc(user.id) + '">重置密码</button>' +
+          '<button class="btn btn-quiet btn-sm user-delete" type="button" data-user-delete="' + esc(user.id) + '"' +
+            (canDelete ? ' title="删除账号" aria-label="删除账号 ' + esc(user.username) + '"' : ' disabled title="' + deleteTitle + '"') +
+            '>' + icon('trash') + '</button>' +
+        '</span>' +
+      '</div>';
+    }).join('');
+    syncUserAddState();
+  }
+
+  function clearUserErrors() {
+    if (!el.userForm) return;
+    $$('.field', el.userForm).forEach(function (field) { field.classList.remove('has-error'); });
+    $$('[data-user-error]', el.userForm).forEach(function (error) { error.textContent = ''; });
+    $$('[aria-invalid="true"]', el.userForm).forEach(function (input) { input.removeAttribute('aria-invalid'); });
+  }
+
+  function clearUserFieldError(event) {
+    var field = event.target.closest ? event.target.closest('.field') : null;
+    if (!field) return;
+    field.classList.remove('has-error');
+    $$('[data-user-error]', field).forEach(function (error) { error.textContent = ''; });
+    $$('[aria-invalid="true"]', field).forEach(function (input) { input.removeAttribute('aria-invalid'); });
+    var global = $('[data-user-error="global"]', el.userForm);
+    if (global) global.textContent = '';
+  }
+
+  function showUserErrors(errors) {
+    clearUserErrors();
+    var firstInput = null;
+    (errors || []).forEach(function (error) {
+      var key = error.key || 'global';
+      var target = $('[data-user-error="' + key + '"]', el.userForm);
+      if (!target) target = $('[data-user-error="global"]', el.userForm);
+      if (!target) return;
+      target.textContent = error.message;
+      if (key === 'global' || target.getAttribute('data-user-error') === 'global') return;
+      var field = target.closest('.field');
+      if (!field) return;
+      field.classList.add('has-error');
+      var input = $('input', field);
+      if (input) {
+        input.setAttribute('aria-invalid', 'true');
+        if (!firstInput) firstInput = input;
+      }
+    });
+    if (firstInput) firstInput.focus({ preventScroll: true });
+  }
+
+  function setUserBusy(busy) {
+    el.userSave.disabled = busy;
+    el.userSave.classList.toggle('is-loading', busy);
+    el.userSaveSpinner.hidden = !busy;
+    el.userCancel.disabled = busy;
+    if (!busy) {
+      el.userSaveLabel.textContent = state.userFormMode === 'reset' ? '保存新密码' : '添加用户';
+    }
+  }
+
+  function openUserEditor(mode, id) {
+    if (!el.userForm) return;
+    if (mode === 'reset') {
+      var user = findUser(id);
+      if (!user) return;
+      state.userFormMode = 'reset';
+      state.userFormId = id;
+      el.userFormTitle.textContent = '重置密码';
+      el.userFormSub.textContent = user.id === state.currentUserId
+        ? '为当前账号设置新密码，保存后本标签页保持登录。'
+        : '为 ' + user.username + ' 设置新密码，保存后其旧登录立即失效。';
+      el.userUsername.value = user.username;
+      el.userUsername.disabled = true;
+      el.userSaveLabel.textContent = '保存新密码';
+    } else {
+      state.userFormMode = 'add';
+      state.userFormId = null;
+      el.userFormTitle.textContent = '添加用户';
+      el.userFormSub.textContent = '创建后即可使用该账号登录控制台';
+      el.userUsername.value = '';
+      el.userUsername.disabled = false;
+      el.userSaveLabel.textContent = '添加用户';
+    }
+    el.userPassword.value = '';
+    el.userPassword2.value = '';
+    clearUserErrors();
+    setUserBusy(false);
+    el.userForm.hidden = false;
+    syncUserAddState();
+    window.setTimeout(function () {
+      var target = state.userFormMode === 'add' ? el.userUsername : el.userPassword;
+      el.userForm.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      target.focus({ preventScroll: true });
+    }, 40);
+  }
+
+  function closeUserEditor() {
+    if (!el.userForm) return;
+    el.userForm.hidden = true;
+    state.userFormMode = 'add';
+    state.userFormId = null;
+    el.userUsername.value = '';
+    el.userUsername.disabled = false;
+    el.userPassword.value = '';
+    el.userPassword2.value = '';
+    clearUserErrors();
+    setUserBusy(false);
+    syncUserAddState();
+  }
+
+  function collectUserForm() {
+    var errors = [];
+    var username = String(el.userUsername.value || '').trim();
+    var password = el.userPassword.value || '';
+    var confirm = el.userPassword2.value || '';
+    if (state.userFormMode === 'add') {
+      if (!username) {
+        errors.push({ key: 'username', message: '请输入用户名' });
+      } else if (!/^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$/.test(username)) {
+        errors.push({ key: 'username', message: '需 3–32 位，以字母或数字开头，可含 . _ -' });
+      }
+    }
+    if (!password) {
+      errors.push({ key: 'password', message: '请输入密码' });
+    } else if (password.length < 8) {
+      errors.push({ key: 'password', message: '密码至少需要 8 个字符' });
+    } else if (password.length > 128) {
+      errors.push({ key: 'password', message: '密码不能超过 128 个字符' });
+    } else if (password !== confirm) {
+      errors.push({ key: 'password', message: '两次输入的密码不一致' });
+    }
+    return { username: username, password: password, errors: errors };
+  }
+
+  async function submitUserForm(event) {
+    if (event) event.preventDefault();
+    if (state.userBusy) return;
+    clearUserErrors();
+    var result = collectUserForm();
+    if (result.errors.length) {
+      showUserErrors(result.errors);
+      return;
+    }
+    var mode = state.userFormMode;
+    var id = state.userFormId;
+    state.userBusy = true;
+    setUserBusy(true);
+    try {
+      var data;
+      if (mode === 'add') {
+        data = await request('/api/users', {
+          method: 'POST',
+          body: { rev: state.usersRev, username: result.username, password: result.password }
+        });
+      } else {
+        data = await request('/api/users/update', {
+          method: 'POST',
+          body: { rev: state.usersRev, id: id, password: result.password }
+        });
+      }
+      applyUsersResponse(data);
+      closeUserEditor();
+      if (mode === 'add') toast('已添加用户「' + result.username + '」', 'success');
+      else toast(id === state.currentUserId ? '密码已更新，当前登录保持有效' : '密码已重置，该账号的旧登录已失效', 'success');
+    } catch (err) {
+      if (err.status === 401) {
+        handleUnauthorized();
+        return;
+      }
+      if (err.status === 409) await loadUsers(true);
+      showUserErrors([{ key: err.field || 'global', message: err.message || '保存失败，请稍后重试' }]);
+    } finally {
+      state.userBusy = false;
+      setUserBusy(false);
+    }
+  }
+
+  function askDeleteUser(id) {
+    var user = findUser(id);
+    if (!user) return;
+    if (id === state.currentUserId) {
+      toast('不能删除当前登录账号', 'info');
+      return;
+    }
+    if ((state.users || []).length <= 1) {
+      toast('至少需要保留一个管理员账号', 'info');
+      return;
+    }
+    state.userDeletingId = id;
+    openConfirm({
+      title: '删除这个账号？',
+      segments: [
+        { text: '即将删除 ' },
+        { strong: true, text: user.username },
+        { text: '，该账号会立即退出登录且无法恢复。' }
+      ],
+      okLabel: '删除账号',
+      danger: true,
+      onOk: confirmDeleteUser
+    });
+  }
+
+  async function confirmDeleteUser() {
+    var id = state.userDeletingId;
+    if (!id || state.userBusy) return;
+    var user = findUser(id);
+    if (!user) {
+      closeModal('generic');
+      return;
+    }
+    state.userBusy = true;
+    el.genericOk.disabled = true;
+    el.genericOk.textContent = '删除中…';
+    try {
+      var data = await request('/api/users/delete', {
+        method: 'POST',
+        body: { rev: state.usersRev, id: id }
+      });
+      state.userDeletingId = null;
+      applyUsersResponse(data);
+      closeModal('generic');
+      toast('已删除账号「' + user.username + '」', 'success');
+    } catch (err) {
+      if (err.status === 401) {
+        closeModal('generic');
+        handleUnauthorized();
+        return;
+      }
+      if (err.status === 409) await loadUsers(true);
+      el.genericOk.disabled = false;
+      el.genericOk.textContent = '删除账号';
+      toast(err.message || '删除失败，请稍后重试', 'error');
+    } finally {
+      state.userBusy = false;
     }
   }
 
@@ -3012,8 +3618,6 @@
 
   function appGroupCount(app) {
     return enabledNodes().filter(function (node) {
-      if (app.bases.indexOf('all') !== -1) return true;
-      if (app.bases.indexOf(node.region) !== -1) return true;
       return (node.tags || []).indexOf(app.key) !== -1;
     }).length;
   }
@@ -3034,10 +3638,10 @@
       if (count) defs.push({ name: REGION_META[region].group, count: count });
     });
     APP_GROUPS.forEach(function (app) {
-      defs.push({ name: app.name, count: appGroupCount(app) });
+      defs.push({ name: app.name, count: appGroupCount(app), unit: ' 个标记节点' });
     });
     el.previewGroupPills.innerHTML = defs.map(function (item) {
-      return '<span class="group-pill' + (item.count ? '' : ' is-zero') + '" title="' + esc(item.name) + ' · ' + item.count + ' 个节点">' +
+      return '<span class="group-pill' + (item.count ? '' : ' is-zero') + '" title="' + esc(item.name) + ' · ' + item.count + (item.unit || ' 个节点') + '">' +
         '<span class="group-pill-name">' + esc(item.name) + '</span><b>' + item.count + '</b></span>';
     }).join('');
   }
@@ -3357,6 +3961,7 @@
     }
     if (name === 'generic') {
       state.deletingId = null;
+      state.userDeletingId = null;
       confirmCallback = null;
     }
   }
@@ -3477,17 +4082,24 @@
   }
 
   function bindEvents() {
-    el.loginForm.addEventListener('submit', function (event) {
-      event.preventDefault();
-      authenticate(el.loginToken.value, false);
-    });
+    el.loginForm.addEventListener('submit', submitAuth);
+    el.loginUsername.addEventListener('input', function () { showLoginError(''); });
+    el.loginPassword.addEventListener('input', function () { showLoginError(''); });
+    el.loginConfirm.addEventListener('input', function () { showLoginError(''); });
+    el.loginSetupToken.addEventListener('input', function () { showLoginError(''); });
     el.loginToken.addEventListener('input', function () { showLoginError(''); });
-    el.loginReveal.addEventListener('click', function () {
+    el.loginPasswordReveal.addEventListener('click', function () {
+      var showing = el.loginPassword.type === 'text';
+      el.loginPassword.type = showing ? 'password' : 'text';
+      setRevealState(el.loginPasswordReveal, !showing, '密码');
+    });
+    el.loginTokenReveal.addEventListener('click', function () {
       var showing = el.loginToken.type === 'text';
       el.loginToken.type = showing ? 'password' : 'text';
-      var use = $('use', el.loginReveal);
-      if (use) use.setAttribute('href', showing ? '#i-eye' : '#i-eye-off');
-      el.loginReveal.setAttribute('aria-label', showing ? '显示令牌' : '隐藏令牌');
+      setRevealState(el.loginTokenReveal, !showing, '令牌');
+    });
+    el.loginRecovery.addEventListener('click', function () {
+      renderAuthView(state.loginView === 'recovery' ? 'login' : 'recovery');
     });
 
     el.navItems.forEach(function (button) {
@@ -3699,6 +4311,23 @@
     el.settingsForm.addEventListener('submit', saveSettings);
     el.settingsForm.addEventListener('input', clearSettingsFieldError);
     el.settingsForm.addEventListener('change', clearSettingsFieldError);
+    if (el.userAdd) el.userAdd.addEventListener('click', function () { openUserEditor('add'); });
+    if (el.userCancel) el.userCancel.addEventListener('click', closeUserEditor);
+    if (el.userForm) {
+      el.userForm.addEventListener('submit', submitUserForm);
+      el.userForm.addEventListener('input', clearUserFieldError);
+    }
+    if (el.userList) {
+      el.userList.addEventListener('click', function (event) {
+        var reset = event.target.closest('[data-user-reset]');
+        if (reset) {
+          openUserEditor('reset', reset.dataset.userReset);
+          return;
+        }
+        var remove = event.target.closest('[data-user-delete]');
+        if (remove && !remove.disabled) askDeleteUser(remove.dataset.userDelete);
+      });
+    }
     el.settingsClear.addEventListener('click', function () {
       setField(el.setUuid, '');
       setField(el.setPbk, '');
@@ -3879,13 +4508,7 @@
       if (scheme.addEventListener) scheme.addEventListener('change', onSchemeChange);
       else if (scheme.addListener) scheme.addListener(onSchemeChange);
     }
-    var saved = storageGet('session', STORAGE_KEY);
-    if (saved) {
-      el.loginToken.value = saved;
-      authenticate(saved, true);
-    } else {
-      window.setTimeout(function () { el.loginToken.focus(); }, 80);
-    }
+    initAuth();
   }
 
   init();

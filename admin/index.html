@@ -60,6 +60,7 @@
     <symbol id="i-zap" viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8Z"/></symbol>
     <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.4 2.4 3.6 5.3 3.6 8.5s-1.2 6.1-3.6 8.5c-2.4-2.4-3.6-5.3-3.6-8.5S9.6 5.9 12 3.5Z"/></symbol>
     <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M16 7l2.5 2.5M19 4l2 2"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c0-3.6 3.1-6.5 7-6.5s7 2.9 7 6.5"/></symbol>
     <symbol id="i-link" viewBox="0 0 24 24"><path d="M10.5 13.5a4.5 4.5 0 0 0 6.4 0l2.6-2.6a4.5 4.5 0 1 0-6.4-6.4L11.5 6"/><path d="M13.5 10.5a4.5 4.5 0 0 0-6.4 0l-2.6 2.6a4.5 4.5 0 1 0 6.4 6.4L12.5 18"/></symbol>
     <symbol id="i-database" viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7.5" ry="3"/><path d="M4.5 6v12c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3V6"/><path d="M4.5 12c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3"/></symbol>
     <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 4.5 6v5.5c0 4.7 3.2 8 7.5 9.5 4.3-1.5 7.5-4.8 7.5-9.5V6L12 3Z"/><path d="m8.8 12 2.2 2.2 4.2-4.4"/></symbol>
@@ -130,31 +131,62 @@
 
     <section class="auth-panel">
       <div class="auth-form-head">
-        <span class="eyebrow">Admin Access</span>
-        <h2>登录控制台</h2>
-        <p>请输入管理令牌以继续，令牌不会写入日志。</p>
+        <span class="eyebrow" id="auth-eyebrow">Admin Access</span>
+        <h2 id="auth-title">登录控制台</h2>
+        <p id="auth-sub">使用管理员账号登录，账号密码保存在你的 KV 中。</p>
       </div>
       <form id="login-form" novalidate>
-        <div class="field">
-          <label for="login-token">管理令牌</label>
+        <div class="field" id="field-username">
+          <label for="login-username">用户名</label>
+          <div class="input-wrap">
+            <span class="input-prefix"><svg class="icon"><use href="#i-user"></use></svg></span>
+            <input id="login-username" name="username" type="text" autocomplete="username" spellcheck="false" autocapitalize="none" maxlength="32" placeholder="管理员用户名">
+          </div>
+        </div>
+        <div class="field" id="field-password">
+          <label for="login-password">密码</label>
           <div class="input-wrap">
             <span class="input-prefix"><svg class="icon"><use href="#i-key"></use></svg></span>
-            <input id="login-token" name="token" type="password" autocomplete="current-password" spellcheck="false" placeholder="输入管理令牌">
-            <button class="input-suffix" type="button" id="login-reveal" aria-label="显示令牌"><svg class="icon"><use href="#i-eye"></use></svg></button>
+            <input id="login-password" name="password" type="password" autocomplete="current-password" maxlength="128" placeholder="输入密码">
+            <button class="input-suffix" type="button" id="login-password-reveal" aria-label="显示密码"><svg class="icon"><use href="#i-eye"></use></svg></button>
+          </div>
+        </div>
+        <div class="field" id="field-confirm" hidden>
+          <label for="login-confirm">确认密码</label>
+          <div class="input-wrap">
+            <span class="input-prefix"><svg class="icon"><use href="#i-shield"></use></svg></span>
+            <input id="login-confirm" name="confirm" type="password" autocomplete="new-password" maxlength="128" placeholder="再次输入密码">
+          </div>
+        </div>
+        <div class="field" id="field-setup-token" hidden>
+          <label for="login-setup-token">部署恢复令牌</label>
+          <div class="input-wrap">
+            <span class="input-prefix"><svg class="icon"><use href="#i-key"></use></svg></span>
+            <input id="login-setup-token" name="setup-token" type="password" autocomplete="off" spellcheck="false" placeholder="环境变量 ADMIN_TOKEN">
+          </div>
+          <div class="field-hint">该实例已配置 <code>ADMIN_TOKEN</code>，初始化需要它确认身份；完成后可删除该环境变量。</div>
+        </div>
+        <div class="field" id="field-token" hidden>
+          <label for="login-token">部署恢复令牌</label>
+          <div class="input-wrap">
+            <span class="input-prefix"><svg class="icon"><use href="#i-key"></use></svg></span>
+            <input id="login-token" name="token" type="password" autocomplete="off" spellcheck="false" placeholder="输入 ADMIN_TOKEN">
+            <button class="input-suffix" type="button" id="login-token-reveal" aria-label="显示令牌"><svg class="icon"><use href="#i-eye"></use></svg></button>
           </div>
         </div>
         <div class="form-error" id="login-error" role="alert" hidden></div>
         <button class="btn btn-primary btn-lg btn-block" id="login-btn" type="submit">
-          <span class="btn-label">进入控制台</span>
+          <span class="btn-label" id="login-label">登录</span>
           <span class="spinner" hidden></span>
         </button>
       </form>
-      <div class="auth-note">
+      <div class="auth-note" id="login-note">
         <svg class="icon"><use href="#i-shield"></use></svg>
-        <span>令牌仅保存在当前标签页，关闭浏览器后自动退出。</span>
+        <span>登录状态仅保存在当前标签页，关闭浏览器后自动退出。</span>
       </div>
       <div class="auth-help">
-        <span>管理令牌为部署时设置的 <code>ADMIN_TOKEN</code>；若未单独设置，也可使用设置页保存的订阅令牌或环境变量 <code>AUTH_TOKEN</code>。</span>
+        <span id="login-help">账号密码保存在你的 KV 中；首次打开会自动进入初始化。</span>
+        <button class="auth-link" type="button" id="login-recovery" hidden>使用部署恢复令牌</button>
       </div>
     </section>
   </div>
@@ -370,7 +402,7 @@
               <li><span class="kv-key"><svg class="icon"><use href="#i-layers"></use></svg>配置版本</span><span class="kv-val mono" id="sys-rev">—</span></li>
               <li><span class="kv-key"><svg class="icon"><use href="#i-refresh"></use></svg>最后更新</span><span class="kv-val" id="sys-updated">—</span></li>
             </ul>
-            <p class="panel-note" id="auth-hint" hidden>订阅令牌可在设置页维护；建议单独配置 <code>ADMIN_TOKEN</code> 用于登录，避免两者共用。</p>
+            <p class="panel-note">登录使用账号密码，可在设置页添加或重置用户；订阅令牌只用于订阅链接。</p>
           </section>
         </div>
 
@@ -532,14 +564,58 @@
           <div>
             <span class="eyebrow">Settings</span>
             <h1>设置</h1>
-            <p class="page-sub">维护访问令牌、VLESS 默认参数、订阅展示信息与界面外观。</p>
+            <p class="page-sub">管理登录账号、订阅令牌、VLESS 参数与界面外观。</p>
           </div>
           <div class="page-head-meta"><span id="settings-updated">—</span></div>
         </div>
 
+        <section class="panel settings-panel users-panel" id="users-panel">
+          <div class="section-head users-head">
+            <div>
+              <h3>用户管理</h3>
+              <p>账号用于登录控制台，所有账号拥有相同的管理权限。</p>
+            </div>
+            <button class="btn btn-quiet btn-sm" type="button" id="user-add">
+              <svg class="icon"><use href="#i-plus"></use></svg>添加用户
+            </button>
+          </div>
+          <div class="user-list" id="user-list">
+            <div class="user-empty">正在载入账号…</div>
+          </div>
+          <form class="user-editor" id="user-form" hidden novalidate>
+            <div class="user-editor-head">
+              <b id="user-form-title">添加用户</b>
+              <span id="user-form-sub">创建后即可使用该账号登录控制台</span>
+            </div>
+            <div class="field">
+              <label for="user-username">用户名</label>
+              <input id="user-username" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="32" placeholder="3–32 位字母、数字、点、下划线或连字符">
+              <div class="field-error" data-user-error="username"></div>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label for="user-password">密码</label>
+                <input id="user-password" type="password" autocomplete="new-password" maxlength="128" placeholder="至少 8 位，请勿复用重要密码">
+                <div class="field-error" data-user-error="password"></div>
+              </div>
+              <div class="field">
+                <label for="user-password2">确认密码</label>
+                <input id="user-password2" type="password" autocomplete="new-password" maxlength="128" placeholder="再次输入密码">
+              </div>
+            </div>
+            <div class="field-error" data-user-error="global"></div>
+            <div class="user-editor-actions">
+              <button class="btn btn-quiet" type="button" id="user-cancel">取消</button>
+              <button class="btn btn-primary" type="submit" id="user-save">
+                <span class="spinner" id="user-save-spinner" hidden></span><span class="btn-label" id="user-save-label">添加用户</span>
+              </button>
+            </div>
+          </form>
+        </section>
+
         <form id="settings-form" novalidate>
           <section class="panel settings-panel">
-            <div class="section-head"><h3>访问令牌</h3><p>订阅链接使用此令牌鉴权。保存后立即生效，无需在 Cloudflare 环境变量中添加 AUTH_TOKEN。</p></div>
+            <div class="section-head"><h3>访问令牌</h3><p>订阅链接使用此令牌鉴权，仅用于订阅访问，不能登录控制台。保存后立即生效，无需环境变量 AUTH_TOKEN。</p></div>
             <div class="field">
               <label for="set-auth-token">AUTH_TOKEN（订阅令牌）</label>
               <div class="input-inline">

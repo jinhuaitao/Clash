@@ -4,10 +4,18 @@ export default {
   },
 }
 
-const VERSION = '2.4.0'
+const VERSION = '2.5.1'
 const CONFIG_KEY = 'config'
+const USERS_KEY = 'users'
 const MAX_NODES = 300
 const MAX_BODY = 256 * 1024
+const MAX_USERS = 20
+const USERNAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$/
+const PASSWORD_MIN = 8
+const PASSWORD_MAX = 128
+// Workers Free 只有 10ms CPU，PBKDF2 迭代次数需控制在较低水平
+const PASSWORD_ITERATIONS = 10000
+const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 
 const MAIN_GROUP = '🌍选择节点'
 const RESERVED_NAMES = new Set([
@@ -82,15 +90,10 @@ async function handleRequest(request, env) {
   const path = url.pathname.replace(/\/+$/, '') || '/'
 
   try {
-    if (path === '/api/config' || path === '/api/preview') {
-      const limited = checkApiRateLimit(request)
-      if (limited) return limited
-      return await handleApi(request, url, path, env)
-    }
     if (path.startsWith('/api/')) {
       const limited = checkApiRateLimit(request)
       if (limited) return limited
-      return json({ error: '接口不存在' }, 404)
+      return await handleApi(request, url, path, env)
     }
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       return new Response('Method Not Allowed', { status: 405, headers: baseHeaders() })
@@ -130,17 +133,14 @@ function dedicatedAdminToken(env) {
   return typeof value === 'string' && value.length > 0 ? value : ''
 }
 
-async function readAccessConfig(env) {
-  try {
-    return (await readConfig(env)).config
-  } catch (err) {
-    console.error('Auth config read failed:', err)
-    return null
-  }
-}
-
 function effectiveAuthToken(config, env) {
   return storedAuthToken(config) || authToken(env)
+}
+
+function bearerToken(request) {
+  const header = request.headers.get('authorization') || ''
+  if (/^bearer\s/i.test(header)) return header.slice(7).trim()
+  return request.headers.get('x-admin-token') || ''
 }
 
 function tokenEqual(a, b) {
@@ -153,23 +153,257 @@ function tokenEqual(a, b) {
   return diff === 0
 }
 
-async function isAdmin(request, env) {
-  const header = request.headers.get('authorization') || ''
-  let supplied = ''
-  if (/^bearer\s/i.test(header)) supplied = header.slice(7).trim()
-  if (!supplied) supplied = request.headers.get('x-admin-token') || ''
-  if (!supplied) return false
+function bytesEqual(a, b) {
+  if (!a || !b || a.length !== b.length) return false
+  let diff = 0
+  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i]
+  return diff === 0
+}
+
+function randomBytes(length) {
+  const bytes = new Uint8Array(length)
+  crypto.getRandomValues(bytes)
+  return bytes
+}
+
+function bytesToBase64Url(bytes) {
+  let binary = ''
+  const chunk = 0x8000
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk))
+  }
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+function base64UrlToBytes(value) {
+  const base64 = String(value || '').replace(/-/g, '+').replace(/_/g, '/')
+  const padded = base64 + '='.repeat((4 - base64.length % 4) % 4)
+  const binary = atob(padded)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+  return bytes
+}
+
+function validateUsername(value) {
+  if (typeof value !== 'string') throw new HttpError(400, '用户名格式不正确', 'username')
+  const username = value.trim()
+  if (!USERNAME_RE.test(username)) {
+    throw new HttpError(400, '用户名需为 3–32 位字母、数字、点、下划线或连字符', 'username')
+  }
+  return username
+}
+
+function validatePassword(value) {
+  if (typeof value !== 'string' || !value) throw new HttpError(400, '密码不能为空', 'password')
+  if (value.length < PASSWORD_MIN) throw new HttpError(400, `密码至少需要 ${PASSWORD_MIN} 个字符`, 'password')
+  if (value.length > PASSWORD_MAX) throw new HttpError(400, `密码不能超过 ${PASSWORD_MAX} 个字符`, 'password')
+  if (!value.trim()) throw new HttpError(400, '密码不能全部为空格', 'password')
+  if (/[\u0000-\u001f\u007f]/.test(value)) throw new HttpError(400, '密码不能包含控制字符', 'password')
+  return value
+}
+
+async function derivePasswordHash(password, salt, iterations) {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(password),
+    'PBKDF2',
+    false,
+    ['deriveBits']
+  )
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt, iterations, hash: 'SHA-256' },
+    key,
+    256
+  )
+  return new Uint8Array(bits)
+}
+
+async function buildPasswordRecord(password) {
+  const salt = randomBytes(16)
+  const hash = await derivePasswordHash(password, salt, PASSWORD_ITERATIONS)
+  return {
+    passwordSalt: bytesToBase64Url(salt),
+    passwordHash: bytesToBase64Url(hash),
+    passwordIterations: PASSWORD_ITERATIONS,
+  }
+}
+
+async function verifyPassword(password, user) {
+  if (!user || typeof user.passwordSalt !== 'string' || typeof user.passwordHash !== 'string') return false
+  const iterations = Number.isFinite(user.passwordIterations) &&
+    user.passwordIterations >= 1000 &&
+    user.passwordIterations <= 100000
+    ? user.passwordIterations
+    : PASSWORD_ITERATIONS
+  const salt = base64UrlToBytes(user.passwordSalt)
+  const expected = base64UrlToBytes(user.passwordHash)
+  if (salt.length < 8 || expected.length !== 32) return false
+  const actual = await derivePasswordHash(password, salt, iterations)
+  return bytesEqual(actual, expected)
+}
+
+async function dummyPasswordCheck(password) {
+  await derivePasswordHash(
+    String(password || '').slice(0, PASSWORD_MAX),
+    randomBytes(16),
+    PASSWORD_ITERATIONS
+  )
+  return false
+}
+
+async function hmacSign(secret, value) {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    base64UrlToBytes(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  )
+  const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(value))
+  return new Uint8Array(signature)
+}
+
+async function createSessionToken(user, secret) {
+  const now = Math.floor(Date.now() / 1000)
+  const payload = {
+    v: 1,
+    sub: user.id,
+    ver: user.version,
+    iat: now,
+    exp: now + SESSION_TTL_SECONDS,
+  }
+  const body = bytesToBase64Url(new TextEncoder().encode(JSON.stringify(payload)))
+  const signature = await hmacSign(secret, body)
+  return `${body}.${bytesToBase64Url(signature)}`
+}
+
+async function verifySessionToken(token, secret) {
+  const parts = String(token || '').split('.')
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return null
+  let supplied
+  try {
+    supplied = base64UrlToBytes(parts[1])
+  } catch (err) {
+    return null
+  }
+  const expected = await hmacSign(secret, parts[0])
+  if (!bytesEqual(supplied, expected)) return null
+
+  let payload
+  try {
+    payload = JSON.parse(new TextDecoder().decode(base64UrlToBytes(parts[0])))
+  } catch (err) {
+    return null
+  }
+  if (!payload || payload.v !== 1 || typeof payload.sub !== 'string') return null
+  if (!Number.isFinite(payload.exp) || payload.exp * 1000 <= Date.now()) return null
+  return payload
+}
+
+function newUserId() {
+  return 'u_' + (crypto.randomUUID ? crypto.randomUUID() : bytesToBase64Url(randomBytes(16)))
+}
+
+function normalizeStoredUser(raw) {
+  if (!raw || typeof raw !== 'object') throw new Error('invalid user')
+  if (typeof raw.id !== 'string' || !raw.id) throw new Error('invalid user id')
+  if (typeof raw.username !== 'string' || !USERNAME_RE.test(raw.username)) throw new Error('invalid username')
+  if (typeof raw.passwordSalt !== 'string' || typeof raw.passwordHash !== 'string') throw new Error('invalid password')
+  if (!Number.isFinite(raw.passwordIterations)) throw new Error('invalid password iterations')
+  const version = Number.isFinite(raw.version) && raw.version > 0 ? raw.version : 1
+  return {
+    id: raw.id,
+    username: raw.username,
+    usernameKey: raw.username.toLowerCase(),
+    passwordSalt: raw.passwordSalt,
+    passwordHash: raw.passwordHash,
+    passwordIterations: raw.passwordIterations,
+    version,
+    createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : new Date().toISOString(),
+  }
+}
+
+async function readUsersStore(env) {
+  const kv = kvBinding(env)
+  if (!kv) return { store: null, readonly: true, corrupted: false }
+
+  let raw
+  try {
+    raw = await kv.get(USERS_KEY)
+  } catch (err) {
+    console.error('Users KV read failed:', err)
+    throw new HttpError(502, '读取用户数据失败，请检查 KV 绑定')
+  }
+  if (!raw) return { store: null, readonly: false, corrupted: false }
+
+  try {
+    const parsed = JSON.parse(raw)
+    if (!parsed || !Array.isArray(parsed.users) || !parsed.users.length) throw new Error('empty users')
+    if (typeof parsed.secret !== 'string' || base64UrlToBytes(parsed.secret).length < 16) {
+      throw new Error('invalid session secret')
+    }
+    const users = parsed.users.map(normalizeStoredUser)
+    return {
+      store: {
+        v: 1,
+        rev: Number.isFinite(parsed.rev) ? parsed.rev : 1,
+        secret: parsed.secret,
+        users,
+        updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : null,
+      },
+      readonly: false,
+      corrupted: false,
+    }
+  } catch (err) {
+    console.error('Users store corrupted:', err)
+    return { store: null, readonly: false, corrupted: true }
+  }
+}
+
+async function writeUsersStore(env, store) {
+  const kv = kvBinding(env)
+  if (!kv) throw new HttpError(503, '尚未绑定 KV 存储，无法保存用户')
+  try {
+    await kv.put(USERS_KEY, JSON.stringify(store))
+  } catch (err) {
+    console.error('Users KV write failed:', err)
+    throw new HttpError(502, '写入用户数据失败，请稍后重试')
+  }
+}
+
+function publicUser(user) {
+  return { id: user.id, username: user.username, createdAt: user.createdAt }
+}
+
+function usersResponse(store, principal) {
+  return {
+    users: store.users.map(publicUser),
+    rev: store.rev,
+    currentUserId: principal && principal.userId ? principal.userId : null,
+    maxUsers: MAX_USERS,
+  }
+}
+
+async function authenticateRequest(request, env) {
+  const supplied = bearerToken(request)
+  if (!supplied) return null
 
   const dedicated = dedicatedAdminToken(env)
-  if (dedicated) return tokenEqual(supplied, dedicated)
+  if (dedicated && tokenEqual(supplied, dedicated)) {
+    return { kind: 'recovery', username: '部署恢复令牌', userId: null, user: null }
+  }
 
-  const config = await readAccessConfig(env)
-  const expected = effectiveAuthToken(config, env)
-  return expected ? tokenEqual(supplied, expected) : false
+  const { store } = await readUsersStore(env)
+  if (!store) return null
+  const payload = await verifySessionToken(supplied, store.secret)
+  if (!payload) return null
+  const user = store.users.find(item => item.id === payload.sub)
+  if (!user || Number(payload.ver) !== user.version) return null
+  return { kind: 'session', username: user.username, userId: user.id, user }
 }
 
 async function subscriptionAccess(env, token) {
-  const config = await readAccessConfig(env)
+  const config = (await readConfig(env)).config
   const expected = effectiveAuthToken(config, env)
   if (!expected || !tokenEqual(token, expected)) return null
   return { config }
@@ -537,8 +771,24 @@ function validateNodes(input) {
 /* ------------------------------------------------------------------ */
 
 async function handleApi(request, url, path, env) {
-  if (!(await isAdmin(request, env))) {
-    return json({ error: '管理令牌无效或未配置' }, 401)
+  if (path === '/api/auth') {
+    if (request.method !== 'GET') return json({ error: '不支持的请求方法' }, 405)
+    return await apiAuthStatus(env)
+  }
+
+  if (path === '/api/setup') {
+    if (request.method !== 'POST') return json({ error: '不支持的请求方法' }, 405)
+    return await apiSetup(request, env)
+  }
+
+  if (path === '/api/login') {
+    if (request.method !== 'POST') return json({ error: '不支持的请求方法' }, 405)
+    return await apiLogin(request, env)
+  }
+
+  const principal = await authenticateRequest(request, env)
+  if (!principal) {
+    return json({ error: '登录已失效，请重新登录' }, 401)
   }
 
   if (path === '/api/config') {
@@ -546,13 +796,17 @@ async function handleApi(request, url, path, env) {
       const result = await readConfig(env)
       return json({
         config: result.config,
-        meta: buildMeta(url, result, env),
+        meta: buildMeta(url, result, env, principal),
       })
     }
     if (request.method === 'PUT') {
-      return await apiSave(request, url, env)
+      return await apiSave(request, url, env, principal)
     }
     return json({ error: '不支持的请求方法' }, 405)
+  }
+
+  if (path === '/api/users' || path === '/api/users/update' || path === '/api/users/delete') {
+    return await apiUsers(request, path, env, principal)
   }
 
   if (path === '/api/preview') {
@@ -575,11 +829,219 @@ async function handleApi(request, url, path, env) {
   return json({ error: '接口不存在' }, 404)
 }
 
-async function apiSave(request, url, env) {
+async function apiAuthStatus(env) {
+  const kv = !!kvBinding(env)
+  let store = null
+  let corrupted = false
+  if (kv) {
+    const result = await readUsersStore(env)
+    store = result.store
+    corrupted = !!result.corrupted
+  }
+  const recovery = !!dedicatedAdminToken(env)
+  return json({
+    version: VERSION,
+    kv,
+    needsSetup: !store,
+    setupLocked: !store && recovery,
+    recovery,
+    corrupted,
+    maxUsers: MAX_USERS,
+  })
+}
+
+async function apiSetup(request, env) {
+  const limited = checkLoginRateLimit(request, '__setup__')
+  if (limited) return limited
+
+  const body = await readJsonBody(request)
+  const username = validateUsername(body.username)
+  const password = validatePassword(body.password)
+
+  const result = await readUsersStore(env)
+  if (result.store) return json({ error: '控制台已完成初始化，请直接登录' }, 409)
+  if (!kvBinding(env)) throw new HttpError(503, '尚未绑定 SUB_KV，无法创建管理员账号')
+
+  const dedicated = dedicatedAdminToken(env)
+  if (dedicated) {
+    const supplied = bearerToken(request)
+    if (!tokenEqual(supplied, dedicated)) {
+      recordLoginFailure(request, '__setup__')
+      return json({ error: '该实例已配置 ADMIN_TOKEN，请填写部署恢复令牌后再初始化', field: 'setupToken' }, 403)
+    }
+  }
+
+  const record = await buildPasswordRecord(password)
+  const user = {
+    id: newUserId(),
+    username,
+    usernameKey: username.toLowerCase(),
+    ...record,
+    version: 1,
+    createdAt: new Date().toISOString(),
+  }
+  const store = {
+    v: 1,
+    rev: 1,
+    secret: bytesToBase64Url(randomBytes(32)),
+    users: [user],
+    updatedAt: new Date().toISOString(),
+  }
+  await writeUsersStore(env, store)
+  clearLoginFailures(request, '__setup__')
+
+  const token = await createSessionToken(user, store.secret)
+  return json({ token, user: publicUser(user) })
+}
+
+async function apiLogin(request, env) {
+  const body = await readJsonBody(request)
+  const username = typeof body.username === 'string' ? body.username.trim() : ''
+  const password = typeof body.password === 'string' ? body.password : ''
+
+  const limited = checkLoginRateLimit(request, username)
+  if (limited) return limited
+
+  const { store } = await readUsersStore(env)
+  if (!store) {
+    return json({ error: '控制台尚未初始化，请刷新页面创建管理员账号', needsSetup: true }, 403)
+  }
+
+  const user = username
+    ? store.users.find(item => item.usernameKey === username.toLowerCase())
+    : null
+  let ok = false
+  if (user && password.length <= PASSWORD_MAX) {
+    ok = await verifyPassword(password, user)
+  } else {
+    await dummyPasswordCheck(password)
+  }
+
+  if (!ok) {
+    recordLoginFailure(request, username)
+    return json({ error: '用户名或密码不正确' }, 401)
+  }
+  clearLoginFailures(request, username)
+
+  const token = await createSessionToken(user, store.secret)
+  return json({ token, user: publicUser(user) })
+}
+
+async function apiUsers(request, path, env, principal) {
+  if (path === '/api/users') {
+    if (request.method === 'GET') {
+      const { store } = await readUsersStore(env)
+      if (!store) return json({ error: '控制台尚未初始化' }, 409)
+      return json(usersResponse(store, principal))
+    }
+    if (request.method !== 'POST') return json({ error: '不支持的请求方法' }, 405)
+    return await apiCreateUser(request, env, principal)
+  }
+  if (request.method !== 'POST') return json({ error: '不支持的请求方法' }, 405)
+  if (path === '/api/users/update') return await apiUpdateUser(request, env, principal)
+  return await apiDeleteUser(request, env, principal)
+}
+
+async function apiCreateUser(request, env, principal) {
+  const body = await readJsonBody(request)
+  const username = validateUsername(body.username)
+  const password = validatePassword(body.password)
+
+  const { store, readonly } = await readUsersStore(env)
+  if (!store) {
+    if (readonly) throw new HttpError(503, '尚未绑定 KV 存储，无法创建用户')
+    return json({ error: '控制台尚未初始化' }, 409)
+  }
+  if (body.rev !== undefined && Number(body.rev) !== store.rev) {
+    return json({ error: '用户列表已在其他窗口更新，请刷新后重试', rev: store.rev }, 409)
+  }
+  if (store.users.length >= MAX_USERS) {
+    return json({ error: `最多只能创建 ${MAX_USERS} 个用户` }, 400)
+  }
+  if (store.users.some(item => item.usernameKey === username.toLowerCase())) {
+    return json({ error: '该用户名已存在', field: 'username' }, 400)
+  }
+
+  const record = await buildPasswordRecord(password)
+  const user = {
+    id: newUserId(),
+    username,
+    usernameKey: username.toLowerCase(),
+    ...record,
+    version: 1,
+    createdAt: new Date().toISOString(),
+  }
+  const next = {
+    ...store,
+    rev: store.rev + 1,
+    users: store.users.concat(user),
+    updatedAt: new Date().toISOString(),
+  }
+  await writeUsersStore(env, next)
+  return json(usersResponse(next, principal))
+}
+
+async function apiUpdateUser(request, env, principal) {
+  const body = await readJsonBody(request)
+  const id = typeof body.id === 'string' ? body.id : ''
+  const password = validatePassword(body.password)
+
+  const { store } = await readUsersStore(env)
+  if (!store) return json({ error: '控制台尚未初始化' }, 409)
+  if (body.rev !== undefined && Number(body.rev) !== store.rev) {
+    return json({ error: '用户列表已在其他窗口更新，请刷新后重试', rev: store.rev }, 409)
+  }
+  const target = store.users.find(item => item.id === id)
+  if (!target) return json({ error: '用户不存在或已被删除' }, 404)
+
+  const record = await buildPasswordRecord(password)
+  const updated = { ...target, ...record, version: target.version + 1 }
+  const next = {
+    ...store,
+    rev: store.rev + 1,
+    users: store.users.map(item => item.id === id ? updated : item),
+    updatedAt: new Date().toISOString(),
+  }
+  await writeUsersStore(env, next)
+
+  const response = usersResponse(next, principal)
+  if (principal.kind === 'session' && principal.userId === id) {
+    response.token = await createSessionToken(updated, next.secret)
+  }
+  return json(response)
+}
+
+async function apiDeleteUser(request, env, principal) {
+  const body = await readJsonBody(request)
+  const id = typeof body.id === 'string' ? body.id : ''
+
+  const { store } = await readUsersStore(env)
+  if (!store) return json({ error: '控制台尚未初始化' }, 409)
+  if (body.rev !== undefined && Number(body.rev) !== store.rev) {
+    return json({ error: '用户列表已在其他窗口更新，请刷新后重试', rev: store.rev }, 409)
+  }
+  const target = store.users.find(item => item.id === id)
+  if (!target) return json({ error: '用户不存在或已被删除' }, 404)
+  if (store.users.length <= 1) return json({ error: '至少需要保留一个管理员账号' }, 400)
+  if (principal.kind === 'session' && principal.userId === id) {
+    return json({ error: '不能删除当前登录账号，请使用其他账号操作' }, 400)
+  }
+
+  const next = {
+    ...store,
+    rev: store.rev + 1,
+    users: store.users.filter(item => item.id !== id),
+    updatedAt: new Date().toISOString(),
+  }
+  await writeUsersStore(env, next)
+  return json(usersResponse(next, principal))
+}
+
+async function readJsonBody(request) {
   const declared = Number(request.headers.get('content-length') || 0)
-  if (declared > MAX_BODY) throw new HttpError(413, '提交的配置过大')
+  if (declared > MAX_BODY) throw new HttpError(413, '提交的数据过大')
   const raw = await request.text()
-  if (raw.length > MAX_BODY) throw new HttpError(413, '提交的配置过大')
+  if (raw.length > MAX_BODY) throw new HttpError(413, '提交的数据过大')
 
   let body
   try {
@@ -588,6 +1050,11 @@ async function apiSave(request, url, env) {
     throw new HttpError(400, '请求数据格式错误')
   }
   if (!body || typeof body !== 'object') throw new HttpError(400, '请求数据格式错误')
+  return body
+}
+
+async function apiSave(request, url, env, principal) {
+  const body = await readJsonBody(request)
 
   const current = await readConfig(env)
   if (current.readonly) {
@@ -631,12 +1098,11 @@ async function apiSave(request, url, env) {
 
   return json({
     config: next,
-    meta: buildMeta(url, { readonly: false, corrupted: false, config: next }, env),
+    meta: buildMeta(url, { readonly: false, corrupted: false, config: next }, env, principal),
   })
 }
 
-function buildMeta(url, result, env) {
-  const dedicated = dedicatedAdminToken(env)
+function buildMeta(url, result, env, principal) {
   const stored = storedAuthToken(result.config)
   const envToken = authToken(env)
   const auth = stored || envToken
@@ -646,9 +1112,11 @@ function buildMeta(url, result, env) {
     readonly: !!result.readonly,
     corrupted: !!result.corrupted,
     hasAuthToken: !!auth,
-    authMode: dedicated ? 'dedicated' : 'shared',
     authSource: stored ? 'settings' : (envToken ? 'environment' : 'none'),
     subUrl: auth ? `${url.origin}/?token=${encodeURIComponent(auth)}` : null,
+    authType: principal ? principal.kind : null,
+    username: principal ? principal.username : null,
+    userId: principal && principal.userId ? principal.userId : null,
   }
 }
 
@@ -676,6 +1144,50 @@ function json(data, status = 200, extraHeaders) {
 const API_RATE_WINDOW_MS = 60 * 1000
 const API_RATE_MAX = 120
 const apiRateBuckets = new Map()
+
+const LOGIN_RATE_WINDOW_MS = 10 * 60 * 1000
+const LOGIN_RATE_MAX = 8
+const loginFailureBuckets = new Map()
+
+function loginBucketKey(request, username) {
+  const ip = request.headers.get('cf-connecting-ip') || 'unknown'
+  return ip + '|' + String(username || '').toLowerCase()
+}
+
+function checkLoginRateLimit(request, username) {
+  const key = loginBucketKey(request, username)
+  const bucket = loginFailureBuckets.get(key)
+  if (!bucket) return null
+  const now = Date.now()
+  if (now - bucket.start >= LOGIN_RATE_WINDOW_MS) {
+    loginFailureBuckets.delete(key)
+    return null
+  }
+  if (bucket.fails < LOGIN_RATE_MAX) return null
+  const retryAfter = Math.max(1, Math.ceil((LOGIN_RATE_WINDOW_MS - (now - bucket.start)) / 1000))
+  return json({ error: '尝试次数过多，请稍后再试' }, 429, { 'retry-after': String(retryAfter) })
+}
+
+function recordLoginFailure(request, username) {
+  const key = loginBucketKey(request, username)
+  const now = Date.now()
+  let bucket = loginFailureBuckets.get(key)
+  if (!bucket || now - bucket.start >= LOGIN_RATE_WINDOW_MS) {
+    bucket = { start: now, fails: 0 }
+    loginFailureBuckets.set(key, bucket)
+  }
+  bucket.fails += 1
+  if (loginFailureBuckets.size > 2000) {
+    for (const [item, value] of loginFailureBuckets) {
+      if (now - value.start >= LOGIN_RATE_WINDOW_MS) loginFailureBuckets.delete(item)
+      if (loginFailureBuckets.size <= 1000) break
+    }
+  }
+}
+
+function clearLoginFailures(request, username) {
+  loginFailureBuckets.delete(loginBucketKey(request, username))
+}
 
 function checkApiRateLimit(request) {
   const ip = request.headers.get('cf-connecting-ip') || 'unknown'
