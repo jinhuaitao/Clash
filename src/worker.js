@@ -1616,15 +1616,80 @@ function randomNonce() {
 
 function renderDecoy(request) {
   const headers = request.headers
-  const ip = headers.get('cf-connecting-ip') || '未知'
-  const country = request.cf ? request.cf.country : '未知'
-  const city = request.cf ? request.cf.city : '未知'
-  const isp = request.cf ? request.cf.asOrganization : '未知运营商'
-  const colo = request.cf ? request.cf.colo : '未知节点'
+  const nonce = randomNonce()
+  const cf = request.cf || {}
+  const known = value => (value === undefined || value === null || value === '' ? '' : String(value))
+  const or = (value, label) => known(value) || label
+
+  const ip = or(headers.get('cf-connecting-ip'), '未知')
+  const country = or(cf.country, '未知')
+  const city = or(cf.city, '未知')
+  const isp = or(cf.asOrganization, '未知运营商')
+  const colo = or(cf.colo, '未知节点')
   const ua = headers.get('user-agent') || '未知浏览器'
   const location = [city, country].filter(value => value && value !== '未知').join(', ') || '未知'
   const version = /:/.test(ip) ? 'IPv6' : 'IPv4'
   const uaShort = ua.length > 120 ? ua.slice(0, 120) + '…' : ua
+
+  const net = {
+    ip,
+    version,
+    country: or(cf.country, ''),
+    region: or(cf.region, ''),
+    continent: or(cf.continent, ''),
+    postal: or(cf.postalCode, ''),
+    lat: or(cf.latitude, ''),
+    lon: or(cf.longitude, ''),
+    timezone: or(cf.timezone, ''),
+    asn: or(cf.asn, ''),
+    isp,
+    colo,
+    tls: or(cf.tlsVersion, ''),
+    cipher: or(cf.tlsCipher, ''),
+    httpProtocol: or(cf.httpProtocol, ''),
+    tcpPort: or(cf.clientTcpPort, ''),
+    keepAlive: or(headers.get('keep-alive'), ''),
+    priority: or(headers.get('priority'), ''),
+    acceptLanguage: ua === '未知浏览器' ? '' : or(headers.get('accept-language'), ''),
+    cfRay: or(headers.get('cf-ray'), ''),
+    ua,
+  }
+  const row = (label, value, id) => {
+    const text = known(value)
+    if (!text) return ''
+    return '<div class="row"><dt>' + esc(label) + '</dt><dd' +
+      (id ? ' id="' + id + '"' : '') + ' data-copy="' + esc(label) + '">' + esc(text) + '</dd></div>'
+  }
+
+  /* 请求头白名单取值：不回显 cookie / authorization，折叠控制字符并按 120 字符截断 */
+  const hdr = (name, label) => {
+    const raw = known(headers.get(name))
+    if (!raw) return ''
+    const flat = raw.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/ {2,}/g, ' ').trim()
+    if (!flat) return ''
+    return row(label, flat.length > 120 ? flat.slice(0, 120) + '…' : flat)
+  }
+
+  const connRows = [
+    row('IP 类型', net.version),
+    row('HTTP 协议', net.httpProtocol),
+    row('TLS 版本', net.tls),
+    row('TLS 加密套件', net.cipher),
+    row('客户端端口', net.tcpPort),
+    row('连接复用', net.keepAlive),
+    row('请求优先级', net.priority),
+    row('Accept-Language', net.acceptLanguage),
+    hdr('sec-ch-ua', 'Sec-CH-UA'),
+    hdr('accept-encoding', 'Accept-Encoding'),
+    hdr('referer', '来源页'),
+    row('CF-Ray', net.cfRay),
+    row('大洲', net.continent),
+    row('省份 / 州', net.region),
+    row('邮政编码', net.postal),
+    row('经纬度', net.lat && net.lon ? net.lat + ', ' + net.lon : ''),
+    row('识别运营商', net.isp),
+    row('接入节点', net.colo),
+  ].join('')
 
   const html = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -1754,7 +1819,7 @@ function renderDecoy(request) {
     background: linear-gradient(96deg, var(--text) 20%, var(--accent) 120%);
     -webkit-background-clip: text; background-clip: text; color: transparent;
   }
-  .ip-meta { display: flex; align-items: center; gap: 10px; color: var(--faint); font-size: 12px; margin-bottom: 28px; }
+  .ip-meta { display: flex; align-items: center; gap: 10px; color: var(--faint); font-size: 12px; margin-bottom: 14px; }
   .chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; background: var(--soft); color: var(--accent); font-weight: 600; font-size: 11px; letter-spacing: .02em; }
   .grid {
     display: grid; grid-template-columns: 1fr 1fr; gap: 1px;
@@ -1772,6 +1837,59 @@ function renderDecoy(request) {
   .card-foot .ok { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); }
   .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 14%, transparent); }
   footer { position: relative; z-index: 1; text-align: center; padding: 0 20px 28px; color: var(--faint); font-size: 11.5px; letter-spacing: .03em; }
+  .stack { position: relative; z-index: 1; width: 100%; max-width: 570px; display: flex; flex-direction: column; gap: 14px; }
+  .top-status { gap: 12px; }
+  .clock { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .tabs {
+    display: flex; gap: 3px; padding: 4px;
+    border: 1px solid var(--line); border-radius: 15px; background: var(--panel);
+    backdrop-filter: blur(18px) saturate(140%); -webkit-backdrop-filter: blur(18px) saturate(140%);
+  }
+  .tab {
+    flex: 1; padding: 8px 6px; border: 0; border-radius: 11px; background: transparent;
+    color: var(--muted); font: inherit; font-size: 12.5px; font-weight: 600; letter-spacing: .01em;
+    cursor: pointer; transition: background .18s ease, color .18s ease;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.is-on { background: var(--soft); color: var(--accent); }
+  .tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+  .card-head h2 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: -.01em; }
+  .ghost-btn {
+    display: inline-flex; align-items: center; gap: 6px; padding: 6px 11px;
+    border: 1px solid var(--line-strong); border-radius: 9px; background: transparent;
+    color: var(--muted); font: inherit; font-size: 11.5px; font-weight: 600; cursor: pointer;
+  }
+  .ghost-btn:hover { color: var(--text); border-color: var(--accent); }
+  .rows { margin: 0; border: 1px solid var(--line); border-radius: 15px; overflow: hidden; background: var(--panel-solid); }
+  .row { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; padding: 11px 15px; border-bottom: 1px solid var(--line); }
+  .row:last-child { border-bottom: 0; }
+  .row dt { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+  .row dd { margin: 0; font-size: 13px; font-weight: 600; text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+  .rows-note { margin: 10px 2px 0; color: var(--faint); font-size: 11.5px; }
+  .ip-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 26px; }
+  .card[hidden], .panel-block[hidden] { display: none; }
+  .sub-head { margin: 20px 0 9px; font-size: 11px; font-weight: 650; letter-spacing: .12em; text-transform: uppercase; color: var(--faint); }
+  .tool + .tool { margin-top: 12px; }
+  .tool { display: flex; flex-direction: column; gap: 10px; padding: 15px 16px; border: 1px solid var(--line); border-radius: 16px; background: var(--panel-solid); }
+  .tool h3 { margin: 0; font-size: 13px; font-weight: 650; }
+  .tool-desc { margin: 0; color: var(--faint); font-size: 11.5px; }
+  .tool-row { display: flex; gap: 8px; }
+  .field {
+    flex: 1; min-width: 0; padding: 9px 12px; border: 1px solid var(--line-strong); border-radius: 10px;
+    background: var(--bg); color: var(--text); font: inherit; font-size: 13px;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  .field:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+  .out {
+    margin: 0; padding: 11px 13px; border-radius: 10px; background: var(--soft);
+    color: var(--text); font-size: 12px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  .out.is-empty { background: transparent; border: 1px dashed var(--line-strong); color: var(--faint); }
+  .out.is-error { background: color-mix(in srgb, #ef4444 12%, transparent); color: #b91c1c; }
+  @media (prefers-color-scheme: dark) { .out.is-error { color: #fca5a5; } }
+  @media (prefers-reduced-motion: reduce) { .tab { transition: none; } }
   @media (max-width: 540px) {
     .topbar { padding: 20px; }
     .brand-tag { display: none; }
@@ -1779,7 +1897,9 @@ function renderDecoy(request) {
     .grid { grid-template-columns: 1fr; }
     .info.span-2 { grid-column: auto; }
     .card-foot { flex-direction: column; align-items: flex-start; gap: 8px; }
-    .top-status span:last-child { display: none; }
+    .top-status .status-label { display: none; }
+    .tab { padding: 8px 4px; font-size: 12px; }
+    .card-head { flex-direction: column; align-items: flex-start; gap: 10px; }
   }
 </style>
 </head>
@@ -1802,48 +1922,494 @@ function renderDecoy(request) {
     <span class="brand-name">Transit Hub</span>
     <span class="brand-tag">Edge Network</span>
   </div>
-  <div class="top-status"><span class="pulse"></span><span>节点运行中</span></div>
+  <div class="top-status"><span class="pulse"></span><span class="status-label">节点运行中</span><span class="clock" id="clock">--:--:--</span></div>
 </header>
 <main>
-  <section class="card" aria-labelledby="ip-title">
+<div class="stack">
+  <nav class="tabs" role="tablist" aria-label="诊断信息分类">
+    <button class="tab is-on" type="button" role="tab" data-tab="overview" aria-selected="true" aria-controls="panel-overview">概览</button>
+    <button class="tab" type="button" role="tab" data-tab="conn" aria-selected="false" aria-controls="panel-conn" tabindex="-1">连接</button>
+    <button class="tab" type="button" role="tab" data-tab="browser" aria-selected="false" aria-controls="panel-browser" tabindex="-1">浏览器</button>
+    <button class="tab" type="button" role="tab" data-tab="tools" aria-selected="false" aria-controls="panel-tools" tabindex="-1">工具</button>
+  </nav>
+  <section class="card" id="panel-overview" role="tabpanel" aria-labelledby="ip-title">
     <div class="eyebrow"><span class="line"></span>Network Diagnostics</div>
     <p class="ip-label" id="ip-title">您的公网 IP 地址</p>
-    <div class="ip">${esc(ip)}</div>
+    <div class="ip" id="ip-line" data-copy="公网 IP">${esc(ip)}</div>
     <div class="ip-meta"><span class="chip">${version}</span><span>由 Cloudflare 边缘网络识别</span></div>
+    <div class="ip-actions">
+      <button class="ghost-btn" type="button" id="ip-mask"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 4l16 16"/><path d="M9.9 5.2A9.8 9.8 0 0 1 12 5c6 0 9.5 7 9.5 7a17.7 17.7 0 0 1-3.3 4.1M6.1 6.6A17.5 17.5 0 0 0 2.5 12S6 19 12 19a9.7 9.7 0 0 0 4.2-.9"/></svg><span id="ip-mask-label">打码显示</span></button>
+      <button class="ghost-btn" type="button" id="ip-copy"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2.5"/><path d="M15.5 9V6.5A2.5 2.5 0 0 0 13 4H6.5A2.5 2.5 0 0 0 4 6.5V13a2.5 2.5 0 0 0 2.5 2.5H9"/></svg><span id="ip-copy-label">复制 IP</span></button>
+      <button class="ghost-btn" type="button" id="reload"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 11a8 8 0 0 0-14-4.5L4 9M4 4v5h5M4 13a8 8 0 0 0 14 4.5L20 15M20 20v-5h-5"/></svg><span>重新识别</span></button>
+    </div>
     <div class="grid">
       <div class="info">
         <span class="info-label">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 21s7-6.1 7-11a7 7 0 1 0-14 0c0 4.9 7 11 7 11Z"/><circle cx="12" cy="10" r="2.6"/></svg>
           地理位置
         </span>
-        <span class="info-value">${esc(location)}</span>
+        <span class="info-value" data-copy="地理位置">${esc(location)}</span>
       </div>
       <div class="info">
         <span class="info-label">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 3.8 5.6 3.8 9S14.5 18.5 12 21c-2.5-2.5-3.8-5.6-3.8-9S9.5 5.5 12 3Z"/></svg>
           接入节点
         </span>
-        <span class="info-value">${esc(colo)}</span>
+        <span class="info-value" data-copy="接入节点">${esc(colo)}</span>
       </div>
       <div class="info span-2">
         <span class="info-label">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="4.5" width="17" height="15" rx="3"/><path d="M3.5 9.5h17M8 14.5h5"/></svg>
           运营商
         </span>
-        <span class="info-value">${esc(isp)}</span>
+        <span class="info-value" data-copy="运营商">${esc(isp)}</span>
+      </div>
+      <div class="info">
+        <span class="info-label">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>
+          所在时区
+        </span>
+        <span class="info-value" data-copy="所在时区">${esc(or(cf.timezone, '未知'))}</span>
+      </div>
+      <div class="info">
+        <span class="info-label">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 18V9M9.5 18V4M15 18v-7M20.5 18v-11"/></svg>
+          自治系统
+        </span>
+        <span class="info-value" data-copy="自治系统">${esc(or(cf.asn, '未知'))}</span>
       </div>
     </div>
     <div class="ua">
       <div class="ua-label">浏览器信息</div>
-      <div class="ua-text">${esc(uaShort)}</div>
+      <div class="ua-text" data-copy="浏览器 UA">${esc(uaShort)}</div>
     </div>
     <div class="card-foot">
       <span class="ok"><span class="dot"></span>服务运行正常</span>
-      <span>Transit Hub · Edge Node</span>
+      <button class="ghost-btn" type="button" id="copy-page"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2.5"/><path d="M15.5 9V6.5A2.5 2.5 0 0 0 13 4H6.5A2.5 2.5 0 0 0 4 6.5V13a2.5 2.5 0 0 0 2.5 2.5H9"/></svg><span id="copy-page-label">复制本页信息</span></button>
     </div>
   </section>
+  <section class="card" id="panel-conn" role="tabpanel" aria-labelledby="conn-title" hidden>
+    <div class="card-head"><h2 id="conn-title">本次连接</h2></div>
+    <dl class="rows">${connRows}</dl>
+    <p class="rows-note">以上信息由 Cloudflare 边缘节点从本次请求中识别，服务端不保存任何访问记录。</p>
+  </section>
+  <section class="card" id="panel-browser" role="tabpanel" aria-labelledby="browser-title" hidden>
+    <div class="card-head"><h2 id="browser-title">浏览器环境</h2></div>
+    <dl class="rows" id="env-rows"></dl>
+    <div class="sub-head" id="perf-head">网络与加载计时</div>
+    <dl class="rows" id="perf-rows"></dl>
+    <p class="rows-note">本标签页的数据由浏览器本地读取，不会发送到服务器。</p>
+  </section>
+  <section class="card" id="panel-tools" role="tabpanel" aria-labelledby="tools-title" hidden>
+    <div class="card-head"><h2 id="tools-title">本地小工具</h2></div>
+    <div class="tool">
+      <h3>IP 进制互转</h3>
+      <p class="tool-desc">输入 IPv4 点分十进制，或对应的 32 位整数。</p>
+      <div class="tool-row"><input class="field" id="ipconv" type="text" aria-label="IP 地址或整数" autocomplete="off" spellcheck="false" placeholder="例如 8.8.8.8 或 134744072"></div>
+      <pre class="out is-empty" id="ipconv-out">等待输入</pre>
+    </div>
+    <div class="tool">
+      <h3>CIDR 网段计算</h3>
+      <p class="tool-desc">输入地址与前缀长度，例如 192.168.10.0/24。</p>
+      <div class="tool-row"><input class="field" id="cidr" type="text" aria-label="CIDR 网段" autocomplete="off" spellcheck="false" placeholder="例如 192.168.10.0/24"></div>
+      <pre class="out is-empty" id="cidr-out">等待输入</pre>
+    </div>
+    <div class="tool">
+      <h3>时间戳与日期互转</h3>
+      <p class="tool-desc">输入秒级或毫秒级时间戳，也可输入日期时间文本。</p>
+      <div class="tool-row"><input class="field" id="ts" type="text" aria-label="时间戳或日期" autocomplete="off" spellcheck="false" placeholder="例如 1735689600 或 2026-01-01 08:00"></div>
+      <pre class="out is-empty" id="ts-out">等待输入</pre>
+    </div>
+    <p class="rows-note">三项计算全部在你的浏览器本地完成，输入内容不会离开这台设备。</p>
+  </section>
+</div>
 </main>
 <footer>© ${new Date().getFullYear()} Transit Hub · Network Diagnostics</footer>
+<script nonce="${nonce}">
+(function () {
+  var NL = String.fromCharCode(10);
+  var EMPTY = '等待输入';
+
+  function node(id) { return document.getElementById(id); }
+  function setText(id, value) { var n = node(id); if (n) n.textContent = value; }
+  function on(id, fn) { var n = node(id); if (n) n.addEventListener('click', fn); }
+  function pad(value) { var x = String(value); return x.length < 2 ? '0' + x : x; }
+
+  var flashTimers = {};
+  function flash(id, label) {
+    var n = node(id);
+    if (!n) return;
+    if (!n.getAttribute('data-label')) n.setAttribute('data-label', n.textContent);
+    n.textContent = label;
+    if (flashTimers[id]) window.clearTimeout(flashTimers[id]);
+    flashTimers[id] = window.setTimeout(function () {
+      n.textContent = n.getAttribute('data-label');
+    }, 1600);
+  }
+
+  /* ---------- 复制 ---------- */
+  function legacyCopy(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.left = '-2400px';
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try {
+      ok = document.execCommand('copy');
+    } catch (err) {
+      ok = false;
+    }
+    document.body.removeChild(ta);
+    return ok;
+  }
+  function copyText(text, done) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(legacyCopy(text)); });
+    } else {
+      done(legacyCopy(text));
+    }
+  }
+
+  /* ---------- 标签页 ---------- */
+  var tabs = [];
+  var tabEls = document.querySelectorAll('.tab');
+  for (var i = 0; i < tabEls.length; i++) tabs.push(tabEls[i]);
+  var envFilled = false;
+
+  function activate(key, focus) {
+    for (var t = 0; t < tabs.length; t++) {
+      var isOn = tabs[t].getAttribute('data-tab') === key;
+      tabs[t].classList.toggle('is-on', isOn);
+      tabs[t].setAttribute('aria-selected', isOn ? 'true' : 'false');
+      tabs[t].tabIndex = isOn ? 0 : -1;
+      if (isOn && focus) tabs[t].focus();
+    }
+    var panels = document.querySelectorAll('[role="tabpanel"]');
+    for (var p = 0; p < panels.length; p++) panels[p].hidden = panels[p].id !== 'panel-' + key;
+    if (key === 'browser' && !envFilled) {
+      envFilled = true;
+      fillEnv();
+    }
+  }
+
+  for (var b = 0; b < tabs.length; b++) {
+    (function (tab, index) {
+      tab.addEventListener('click', function () { activate(tab.getAttribute('data-tab'), false); });
+      tab.addEventListener('keydown', function (ev) {
+        var step = ev.key === 'ArrowRight' ? 1 : ev.key === 'ArrowLeft' ? -1 : 0;
+        if (step) {
+          ev.preventDefault();
+          activate(tabs[(index + step + tabs.length) % tabs.length].getAttribute('data-tab'), true);
+        } else if (ev.key === 'Home' || ev.key === 'End') {
+          ev.preventDefault();
+          activate(tabs[ev.key === 'End' ? tabs.length - 1 : 0].getAttribute('data-tab'), true);
+        }
+      });
+    })(tabs[b], b);
+  }
+
+  /* ---------- 时钟 ---------- */
+  var clock = node('clock');
+  function tick() {
+    if (!clock) return;
+    var d = new Date();
+    clock.textContent = pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  }
+  tick();
+  window.setInterval(tick, 1000);
+
+  /* ---------- IP 打码与复制 ---------- */
+  var ipLine = node('ip-line');
+  var realIp = ipLine ? String(ipLine.textContent).trim() : '';
+  var masked = false;
+
+  function maskIp(value) {
+    if (!value || value === '未知') return value;
+    if (value.indexOf(':') >= 0) {
+      var g = value.split(':');
+      return g.slice(0, 2).join(':') + ':…';
+    }
+    var parts = value.split('.');
+    if (parts.length !== 4) return value;
+    return parts[0] + '.' + parts[1] + '.*.*';
+  }
+
+  on('ip-mask', function () {
+    if (!ipLine) return;
+    masked = !masked;
+    ipLine.textContent = masked ? maskIp(realIp) : realIp;
+    setText('ip-mask-label', masked ? '显示完整' : '打码显示');
+  });
+  on('ip-copy', function () {
+    if (!realIp || realIp === '未知') {
+      flash('ip-copy-label', '暂无 IP');
+      return;
+    }
+    copyText(realIp, function (ok) { flash('ip-copy-label', ok ? '已复制' : '复制失败'); });
+  });
+  on('reload', function () { window.location.reload(); });
+  on('copy-page', function () {
+    var items = document.querySelectorAll('[data-copy]');
+    var lines = [];
+    for (var c = 0; c < items.length; c++) {
+      var value = String(items[c].textContent).trim();
+      if (value && value !== '未知') lines.push(items[c].getAttribute('data-copy') + '  ' + value);
+    }
+    if (!lines.length) {
+      flash('copy-page-label', '暂无内容');
+      return;
+    }
+    copyText('Transit Hub 诊断信息' + NL + lines.join(NL), function (ok) {
+      flash('copy-page-label', ok ? '已复制' : '复制失败');
+    });
+  });
+
+  /* ---------- 浏览器环境 ---------- */
+  function addRow(dl, label, value) {
+    var text = value === undefined || value === null ? '' : String(value).trim();
+    if (!text) return;
+    var wrap = document.createElement('div');
+    wrap.className = 'row';
+    var dt = document.createElement('dt');
+    dt.textContent = label;
+    var dd = document.createElement('dd');
+    dd.textContent = text;
+    dd.setAttribute('data-copy', label);
+    wrap.appendChild(dt);
+    wrap.appendChild(dd);
+    dl.appendChild(wrap);
+  }
+  function mq(query) { return window.matchMedia ? window.matchMedia(query).matches : false; }
+  function brandText(brands) {
+    var out = [];
+    for (var r = 0; r < brands.length; r++) out.push(brands[r].brand + ' ' + brands[r].version);
+    return out.join(', ');
+  }
+  function offsetText() {
+    var minutes = -new Date().getTimezoneOffset();
+    var abs = Math.abs(minutes);
+    return (minutes < 0 ? '-' : '+') + pad(Math.floor(abs / 60)) + ':' + pad(abs % 60);
+  }
+
+  function fillEnv() {
+    var env = node('env-rows');
+    if (!env) return;
+    var n = navigator;
+    var timeZone = '';
+    try {
+      timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+    } catch (err) {
+      timeZone = '';
+    }
+    var hints = n.userAgentData || null;
+    addRow(env, '平台', (hints && hints.platform) || n.platform || '');
+    addRow(env, '浏览器内核', hints && hints.brands && hints.brands.length ? brandText(hints.brands) : '');
+    addRow(env, '移动设备', hints ? (hints.mobile ? '是' : '否') : '');
+    addRow(env, 'CPU 核心', n.hardwareConcurrency || '');
+    addRow(env, '内存', n.deviceMemory ? n.deviceMemory + ' GB' : '');
+    addRow(env, '界面语言', n.languages && n.languages.length ? n.languages.join(', ') : n.language || '');
+    addRow(env, '时区', timeZone ? timeZone + ' (UTC' + offsetText() + ')' : '');
+    addRow(env, '屏幕', window.screen ? screen.width + ' × ' + screen.height : '');
+    addRow(env, '可用区域', window.screen ? screen.availWidth + ' × ' + screen.availHeight : '');
+    addRow(env, '视口', window.innerWidth + ' × ' + window.innerHeight);
+    addRow(env, '像素比', window.devicePixelRatio ? window.devicePixelRatio + 'x' : '');
+    addRow(env, '色深', window.screen && screen.colorDepth ? screen.colorDepth + ' bit' : '');
+    addRow(env, '触摸点', typeof n.maxTouchPoints === 'number' ? n.maxTouchPoints : '');
+    addRow(env, '在线状态', n.onLine ? '在线' : '离线');
+    addRow(env, 'Cookie', n.cookieEnabled ? '已启用' : '已禁用');
+    addRow(env, '外观偏好', mq('(prefers-color-scheme: dark)') ? '深色' : '浅色');
+    addRow(env, '减少动效', mq('(prefers-reduced-motion: reduce)') ? '已开启' : '未开启');
+    addRow(env, '网络类型', n.connection && n.connection.effectiveType ? n.connection.effectiveType : '');
+    addRow(env, '来源页', document.referrer || '');
+    fillPerf();
+  }
+
+  function fillPerf() {
+    var dl = node('perf-rows');
+    if (!dl) return;
+    var list = window.performance && performance.getEntriesByType ? performance.getEntriesByType('navigation') : [];
+    var nav = list.length ? list[0] : null;
+    if (nav) {
+      var ms = function (value) { return value > 0 && isFinite(value) ? Math.round(value) + ' ms' : ''; };
+      addRow(dl, 'DNS 解析', ms(nav.domainLookupEnd - nav.domainLookupStart));
+      addRow(dl, 'TCP 连接', ms(nav.connectEnd - nav.connectStart));
+      addRow(dl, 'TLS 握手', nav.secureConnectionStart ? ms(nav.connectEnd - nav.secureConnectionStart) : '');
+      addRow(dl, '等待首字节', ms(nav.responseStart - nav.requestStart));
+      addRow(dl, '内容下载', ms(nav.responseEnd - nav.responseStart));
+      addRow(dl, 'DOM 就绪', ms(nav.domContentLoadedEventEnd));
+      addRow(dl, '完全加载', ms(nav.duration));
+      addRow(dl, 'HTTP 协议', nav.protocol || '');
+    }
+    if (!dl.children.length) {
+      dl.hidden = true;
+      var head = node('perf-head');
+      if (head) head.hidden = true;
+    }
+  }
+
+  /* ---------- 小工具 ---------- */
+  function setOut(id, state, content) {
+    var n = node(id);
+    if (!n) return;
+    n.textContent = content;
+    n.classList.toggle('is-empty', state === 'empty');
+    n.classList.toggle('is-error', state === 'error');
+  }
+  function isDigits(text) {
+    if (!text.length) return false;
+    for (var d = 0; d < text.length; d++) {
+      var code = text.charCodeAt(d);
+      if (code < 48 || code > 57) return false;
+    }
+    return true;
+  }
+  function parseV4(text) {
+    var parts = text.split('.');
+    if (parts.length !== 4) return null;
+    var out = [];
+    for (var o = 0; o < 4; o++) {
+      if (!isDigits(parts[o]) || parts[o].length > 3) return null;
+      var value = parseInt(parts[o], 10);
+      if (value > 255) return null;
+      out.push(value);
+    }
+    return out;
+  }
+  function toLong(octets) { return ((octets[0] * 256 + octets[1]) * 256 + octets[2]) * 256 + octets[3]; }
+  function toOctets(long) {
+    var out = [];
+    for (var s = 3; s >= 0; s--) out.push(Math.floor(long / Math.pow(256, s)) % 256);
+    return out;
+  }
+  function ipOf(long) { return toOctets(long).join('.'); }
+  function bin8(value) { var s = value.toString(2); while (s.length < 8) s = '0' + s; return s; }
+  function hex2(value) { var s = value.toString(16); return s.length < 2 ? '0' + s : s; }
+
+  function runConv(raw) {
+    var text = raw.trim();
+    if (!text) return setOut('ipconv-out', 'empty', EMPTY);
+    if (text.indexOf(':') >= 0) return setOut('ipconv-out', 'error', '仅换算 IPv4，请输入点分十进制或 32 位整数');
+    var octets = text.indexOf('.') >= 0 ? parseV4(text) : null;
+    var origin = 'IPv4 地址';
+    var long = 0;
+    if (!octets && isDigits(text) && text.length <= 10) {
+      long = parseInt(text, 10);
+      if (long > 4294967295) return setOut('ipconv-out', 'error', '十进制超出 IPv4 范围（0 – 4294967295）');
+      octets = toOctets(long);
+      origin = '十进制整数';
+    }
+    if (!octets) return setOut('ipconv-out', 'error', '格式不正确，示例：8.8.8.8 或 134744072');
+    long = toLong(octets);
+    setOut('ipconv-out', 'ok', [
+      '识别为      ' + origin,
+      '点分十进制  ' + octets.join('.'),
+      '十进制      ' + long,
+      '十六进制    0x' + octets.map(hex2).join(''),
+      '二进制      ' + octets.map(bin8).join('.'),
+      'IPv6 映射   ::ffff:' + octets.join('.'),
+    ].join(NL));
+  }
+
+  function runCidr(raw) {
+    var text = raw.trim();
+    if (!text) return setOut('cidr-out', 'empty', EMPTY);
+    var parts = text.split('/');
+    if (parts.length !== 2) return setOut('cidr-out', 'error', '格式：地址/前缀，例如 192.168.10.0/24');
+    var octets = parseV4(parts[0].trim());
+    if (!octets) return setOut('cidr-out', 'error', '仅支持 IPv4 地址，例如 192.168.10.0/24');
+    if (!isDigits(parts[1]) || parts[1].length > 2) return setOut('cidr-out', 'error', '前缀长度需为 0 – 32');
+    var prefix = parseInt(parts[1], 10);
+    if (prefix > 32) return setOut('cidr-out', 'error', '前缀长度需为 0 – 32');
+    var size = Math.pow(2, 32 - prefix);
+    var network = Math.floor(toLong(octets) / size) * size;
+    var broadcast = network + size - 1;
+    var mask = prefix === 0 ? 0 : 4294967296 - size;
+    setOut('cidr-out', 'ok', [
+      'CIDR 表示   ' + ipOf(network) + '/' + prefix,
+      '网络地址    ' + ipOf(network),
+      '子网掩码    ' + ipOf(mask),
+      '通配符掩码  ' + ipOf(size - 1),
+      '广播地址    ' + ipOf(broadcast),
+      '地址总数    ' + size,
+      '可用主机    ' + (prefix >= 31 ? (prefix === 32 ? 1 : 2) : size - 2),
+      '首个可用    ' + (prefix <= 30 ? ipOf(network + 1) : ipOf(network)),
+      '末个可用    ' + (prefix <= 30 ? ipOf(broadcast - 1) : ipOf(broadcast)),
+    ].join(NL));
+  }
+
+  function textToDate(text) {
+    var groups = text.split(' ');
+    var ymd = groups[0].split('-');
+    if (ymd.length !== 3) ymd = groups[0].split('/');
+    if (ymd.length !== 3 || !isDigits(ymd[0]) || !isDigits(ymd[1]) || !isDigits(ymd[2])) return null;
+    var hms = [0, 0, 0];
+    if (groups[1]) {
+      var pieces = groups[1].split(':');
+      for (var h = 0; h < pieces.length && h < 3; h++) {
+        if (!isDigits(pieces[h])) return null;
+        hms[h] = parseInt(pieces[h], 10);
+      }
+    }
+    var date = new Date(parseInt(ymd[0], 10), parseInt(ymd[1], 10) - 1, parseInt(ymd[2], 10), hms[0], hms[1], hms[2]);
+    return isNaN(date.getTime()) ? null : date.getTime();
+  }
+  function humanDiff(delta) {
+    var units = [[31536000, '年'], [2592000, '个月'], [86400, '天'], [3600, '小时'], [60, '分钟']];
+    var rest = Math.abs(delta) / 1000;
+    var parts = [];
+    for (var u = 0; u < units.length; u++) {
+      var count = Math.floor(rest / units[u][0]);
+      if (count) {
+        parts.push(count + units[u][1]);
+        rest -= count * units[u][0];
+      }
+      if (parts.length === 2) break;
+    }
+    if (!parts.length) parts.push('不到 1 分钟');
+    return parts.join(' ') + (delta > 0 ? '前' : '后');
+  }
+  function runStamp(raw) {
+    var text = raw.trim();
+    if (!text) return setOut('ts-out', 'empty', EMPTY);
+    var digits = text.charAt(0) === '-' ? text.slice(1) : text;
+    var milliseconds = null;
+    if (isDigits(digits)) {
+      var numeric = Number(text);
+      if (Math.abs(numeric) > 86400000000000) return setOut('ts-out', 'error', '时间戳超出可处理范围');
+      milliseconds = digits.length > 10 ? numeric : numeric * 1000;
+    } else {
+      var parsed = Date.parse(text);
+      milliseconds = isNaN(parsed) ? textToDate(text) : parsed;
+      if (milliseconds === null || isNaN(milliseconds)) {
+        return setOut('ts-out', 'error', '无法识别，示例：1735689600 或 2026-01-01 08:00');
+      }
+    }
+    var date = new Date(milliseconds);
+    if (isNaN(date.getTime())) return setOut('ts-out', 'error', '时间超出可处理范围');
+    var weekday = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][date.getDay()];
+    var local = date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) +
+      ' ' + pad(date.getHours()) + ':' + pad(date.getMinutes()) + ':' + pad(date.getSeconds());
+    setOut('ts-out', 'ok', [
+      '秒级        ' + Math.round(milliseconds / 1000),
+      '毫秒级      ' + Math.round(milliseconds),
+      'UTC         ' + date.toISOString().replace('T', ' ').slice(0, 19),
+      '本地时间    ' + local + ' ' + weekday,
+      '相对当前    ' + humanDiff(Date.now() - milliseconds),
+    ].join(NL));
+  }
+
+  function bindTool(id, fn) {
+    var n = node(id);
+    if (n) n.addEventListener('input', function () { fn(n.value); });
+  }
+  bindTool('ipconv', runConv);
+  bindTool('cidr', runCidr);
+  bindTool('ts', runStamp);
+})();
+</script>
 </body>
 </html>`
 
@@ -1853,7 +2419,7 @@ function renderDecoy(request) {
       'content-type': 'text/html;charset=UTF-8',
       'cache-control': 'no-store',
       'x-robots-tag': 'noindex, nofollow',
-      'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      'content-security-policy': "default-src 'none'; script-src 'nonce-" + nonce + "'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
     },
   })
 }
