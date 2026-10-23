@@ -137,10 +137,10 @@
       </div>
       <form id="login-form" novalidate>
         <div class="field" id="field-username">
-          <label for="login-username">用户名</label>
+          <label for="login-username">用户名或邮箱</label>
           <div class="input-wrap">
             <span class="input-prefix"><svg class="icon"><use href="#i-user"></use></svg></span>
-            <input id="login-username" name="username" type="text" autocomplete="username" spellcheck="false" autocapitalize="none" maxlength="32" placeholder="管理员用户名">
+            <input id="login-username" name="username" type="text" autocomplete="username" spellcheck="false" autocapitalize="none" maxlength="254" placeholder="管理员用户名或邮箱">
           </div>
         </div>
         <div class="field" id="field-password">
@@ -588,8 +588,8 @@
               <span id="user-form-sub">创建后即可使用该账号登录控制台</span>
             </div>
             <div class="field">
-              <label for="user-username">用户名</label>
-              <input id="user-username" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="32" placeholder="3–32 位字母、数字、点、下划线或连字符">
+              <label for="user-username">用户名或邮箱</label>
+              <input id="user-username" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="254" placeholder="3–254 位用户名，或直接填写邮箱地址">
               <div class="field-error" data-user-error="username"></div>
             </div>
             <div class="field-row">

@@ -4,13 +4,13 @@ export default {
   },
 }
 
-const VERSION = '2.5.1'
+const VERSION = '2.6.0'
 const CONFIG_KEY = 'config'
 const USERS_KEY = 'users'
 const MAX_NODES = 300
 const MAX_BODY = 256 * 1024
 const MAX_USERS = 20
-const USERNAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$/
+const USERNAME_RE = /^[A-Za-z0-9][A-Za-z0-9._+@-]{2,253}$/
 const PASSWORD_MIN = 8
 const PASSWORD_MAX = 128
 // Workers Free 只有 10ms CPU，PBKDF2 迭代次数需控制在较低水平
@@ -188,7 +188,7 @@ function validateUsername(value) {
   if (typeof value !== 'string') throw new HttpError(400, '用户名格式不正确', 'username')
   const username = value.trim()
   if (!USERNAME_RE.test(username)) {
-    throw new HttpError(400, '用户名需为 3–32 位字母、数字、点、下划线或连字符', 'username')
+    throw new HttpError(400, '用户名需为 3–254 位（字母、数字或 . _ + @ -），也可以直接填写邮箱地址', 'username')
   }
   return username
 }

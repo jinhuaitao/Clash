@@ -9,6 +9,7 @@
   var MAX_TOTAL_GB = 1048576;
   var THEME_MODES = ['system', 'light', 'dark'];
   var MAX_USERS = 20;
+  var USERNAME_RE = /^[A-Za-z0-9][A-Za-z0-9._+@-]{2,253}$/;
   var FINGERPRINTS = ['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', 'random', 'randomized'];
   var SS_CIPHERS = ['aes-128-gcm', 'aes-256-gcm', 'chacha20-ietf-poly1305', 'xchacha20-ietf-poly1305'];
 
@@ -637,8 +638,8 @@
     el.authEyebrow.textContent = setup ? 'First Run' : (recovery ? 'Recovery' : 'Admin Access');
     el.authTitle.textContent = setup ? '初始化控制台' : (recovery ? '恢复访问' : '登录控制台');
     el.authSub.textContent = setup
-      ? '创建第一个管理员账号，账号密码会保存在你的 KV 中。'
-      : (recovery ? '使用部署时配置的 ADMIN_TOKEN 临时进入控制台。' : '使用管理员账号登录，账号密码保存在你的 KV 中。');
+      ? '创建第一个管理员账号，用户名可使用邮箱，账号密码会保存在你的 KV 中。'
+      : (recovery ? '使用部署时配置的 ADMIN_TOKEN 临时进入控制台。' : '使用用户名或邮箱登录，账号密码保存在你的 KV 中。');
 
     el.fieldUsername.hidden = recovery;
     el.fieldPassword.hidden = recovery;
@@ -728,7 +729,12 @@
     showLoginError('');
 
     if (!username) {
-      showLoginError('请输入用户名。');
+      showLoginError('请输入用户名或邮箱。');
+      el.loginUsername.focus();
+      return;
+    }
+    if (setup && !USERNAME_RE.test(username)) {
+      showLoginError('用户名需为 3–254 位（字母、数字或 . _ + @ -），也可以直接填写邮箱地址。');
       el.loginUsername.focus();
       return;
     }
@@ -1900,7 +1906,7 @@
       return '<div class="user-row' + (current ? ' is-current' : '') + '">' +
         '<span class="user-avatar">' + esc(userInitial(user.username)) + '</span>' +
         '<span class="user-main">' +
-          '<span class="user-name">' + esc(user.username) + (current ? '<span class="user-badge">当前账号</span>' : '') + '</span>' +
+          '<span class="user-name" title="' + esc(user.username) + '">' + esc(user.username) + (current ? '<span class="user-badge">当前账号</span>' : '') + '</span>' +
           '<span class="user-sub">' + (created ? '创建于 ' + esc(created) + ' · ' : '') + '管理员</span>' +
         '</span>' +
         '<span class="user-actions">' +
@@ -2021,8 +2027,8 @@
     if (state.userFormMode === 'add') {
       if (!username) {
         errors.push({ key: 'username', message: '请输入用户名' });
-      } else if (!/^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$/.test(username)) {
-        errors.push({ key: 'username', message: '需 3–32 位，以字母或数字开头，可含 . _ -' });
+      } else if (!USERNAME_RE.test(username)) {
+        errors.push({ key: 'username', message: '需 3–254 位，以字母或数字开头，可含 . _ + @ -，也可直接填写邮箱' });
       }
     }
     if (!password) {
