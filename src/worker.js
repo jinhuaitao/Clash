@@ -4,7 +4,7 @@ export default {
   },
 }
 
-const VERSION = '2.6.2'
+const VERSION = '2.7.0'
 const CONFIG_KEY = 'config'
 const USERS_KEY = 'users'
 const MAX_NODES = 300
@@ -103,20 +103,22 @@ async function handleRequest(request, env) {
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       return new Response('Method Not Allowed', { status: 405, headers: baseHeaders() })
     }
-    if (path === '/admin' || path === '/console' || url.searchParams.get('admin') === '1') {
-      return serveAdmin()
+    // HEAD 只用于探活：不拼伪装页 HTML，也不返回正文，避免白烧 CPU 且符合 RFC 9110
+    const headOnly = request.method === 'HEAD'
+    if (path === '/admin' || path === '/console') {
+      return serveAdmin(headOnly)
     }
     const token = url.searchParams.get('token') || ''
     if (token) {
       const limited = checkSubRateLimit(request)
       if (limited) return limited
       const access = await subscriptionAccess(env, token)
-      if (access) return await serveSubscription(env, access.config)
+      if (access) return await serveSubscription(env, access.config, headOnly)
     }
     // 无令牌路径同样限流：伪装页每次都要拼整页 HTML，不能成为免费刷 CPU 的入口
     const decoyLimited = checkSubRateLimit(request)
     if (decoyLimited) return decoyLimited
-    return renderDecoy(request)
+    return renderDecoy(request, headOnly)
   } catch (err) {
     if (err instanceof HttpError) {
       return json({ error: err.message, field: err.field || null }, err.status)
@@ -406,6 +408,19 @@ function publicUser(user) {
   return { id: user.id, username: user.username, createdAt: user.createdAt }
 }
 
+/* 账号接口共用：区分「没绑 KV」「还没初始化」「数据损坏」三种状态，
+   损坏时不能像未初始化那样提示用户去创建账号，否则会误导成可以覆盖原数据 */
+function usersStoreError(result) {
+  if (result.store) return null
+  if (result.corrupted) {
+    return json({ error: '用户数据已损坏，请在 Cloudflare KV 中修复或删除 users 记录后再操作', corrupted: true }, 409)
+  }
+  if (result.readonly) {
+    return json({ error: '尚未绑定 KV 存储，无法管理账号' }, 503)
+  }
+  return json({ error: '控制台尚未初始化' }, 409)
+}
+
 function usersResponse(store, principal) {
   return {
     users: store.users.map(publicUser),
@@ -470,7 +485,30 @@ function kvBinding(env) {
 }
 
 function emptyConfig() {
-  return { v: 1, rev: 0, updatedAt: null, nodes: [], defaults: {}, regionOrder: {}, subscription: {}, authToken: '' }
+  return { v: 1, rev: 0, updatedAt: null, nodes: [], defaults: {}, regionOrder: {}, subscription: {}, authToken: '', providerBase: '' }
+}
+
+const PROVIDER_BASE_DEFAULT = 'https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release'
+
+/* rule-providers 的镜像前缀：允许换成自建 / 国内可达的 CDN，空值用默认。
+   只接受 https:// 开头、无空白与控制字符、无引号与反斜杠的短 URL，避免拼进 YAML 后破坏结构。 */
+function sanitizeProviderBase(input) {
+  const value = typeof input === 'string' ? input.trim() : ''
+  if (!value) return ''
+  if (value.length > 256) return ''
+  if (/[\s\u0000-\u001f\u007f"'\\]/.test(value)) return ''
+  if (!/^https:\/\/[A-Za-z0-9._~:/?#@!$&*+,;=%-]+$/.test(value)) return ''
+  return value.replace(/\/+$/, '')
+}
+
+function validateProviderBase(value) {
+  if (value === undefined || value === null || value === '') return ''
+  if (typeof value !== 'string') throw new HttpError(400, 'rule-providers 镜像地址格式不正确', 'providerBase')
+  const cleaned = sanitizeProviderBase(value)
+  if (!cleaned) {
+    throw new HttpError(400, 'rule-providers 镜像地址需为 https:// 开头、不含空格与引号且不超过 256 个字符', 'providerBase')
+  }
+  return cleaned
 }
 
 function sanitizeDefaults(input) {
@@ -501,6 +539,11 @@ function validateAuthToken(value) {
   if (typeof value !== 'string') throw new HttpError(400, '订阅令牌格式不正确', 'authToken')
   const token = value.trim()
   if (!token) return ''
+  // 掩码字符不可能是合法令牌：避免前端把「••••abcd」原样回传，把订阅链接改掉
+  // 放在长度校验之前，无论掩码多长都能给出可执行的提示
+  if (token.includes('•')) {
+    throw new HttpError(400, '订阅令牌不能包含掩码字符，请填写完整令牌', 'authToken')
+  }
   if (token.length < AUTH_TOKEN_MIN) {
     throw new HttpError(400, `订阅令牌至少需要 ${AUTH_TOKEN_MIN} 个字符`, 'authToken')
   }
@@ -528,7 +571,7 @@ function sanitizeSubscription(input) {
   return out
 }
 
-async function readConfig(env) {
+async function readConfig(env, options = {}) {
   const kv = kvBinding(env)
   if (!kv) {
     return { config: emptyConfig(), readonly: true, corrupted: false }
@@ -544,11 +587,14 @@ async function readConfig(env) {
 
   if (!raw) {
     const seeded = emptyConfig()
-    try {
-      await kv.put(CONFIG_KEY, JSON.stringify(seeded))
-    } catch (err) {
-      console.error('KV seed failed:', err)
-      throw new HttpError(502, '初始化 KV 失败，请检查 SUB_KV 绑定是否正常')
+    // 只有写路径才落盘：订阅与伪装页这类未鉴权的读请求不应该产生 KV 写入
+    if (options.seed) {
+      try {
+        await kv.put(CONFIG_KEY, JSON.stringify(seeded))
+      } catch (err) {
+        console.error('KV seed failed:', err)
+        throw new HttpError(502, '初始化 KV 失败，请检查 SUB_KV 绑定是否正常')
+      }
     }
     return { config: seeded, readonly: false, corrupted: false }
   }
@@ -566,6 +612,7 @@ async function readConfig(env) {
         regionOrder: reconcileRegionOrder(parsed.regionOrder, parsed.nodes),
         subscription: sanitizeSubscription(parsed.subscription),
         authToken: storedAuthToken(parsed),
+        providerBase: sanitizeProviderBase(parsed.providerBase),
       },
       readonly: false,
       corrupted: false,
@@ -803,12 +850,13 @@ function validateNodes(input) {
     } else if (type === 'trojan') {
       node.password = requireString(raw.password, 'password', '密码', 128)
       node.sni = hostValue(raw.sni, 'sni', 'SNI')
-      node.skipCertVerify = boolValue(raw.skipCertVerify, true)
+      // 默认校验证书：跳过校验只应由用户在抽屉里显式打开（自签 / 测试场景）
+      node.skipCertVerify = boolValue(raw.skipCertVerify)
       node.udp = boolValue(raw.udp, true)
     } else if (type === 'hysteria2') {
       node.password = requireString(raw.password, 'password', '密码', 128)
       node.sni = hostValue(raw.sni, 'sni', 'SNI')
-      node.skipCertVerify = boolValue(raw.skipCertVerify, true)
+      node.skipCertVerify = boolValue(raw.skipCertVerify)
       node.up = bandwidthValue(raw.up, 'up', '上行带宽')
       node.down = bandwidthValue(raw.down, 'down', '下行带宽')
     } else if (type === 'ss') {
@@ -852,7 +900,7 @@ async function handleApi(request, url, path, env) {
     if (request.method === 'GET') {
       const result = await readConfig(env)
       return json({
-        config: result.config,
+        config: publicConfig(result.config),
         meta: buildMeta(url, result, env, principal),
       })
     }
@@ -953,6 +1001,19 @@ async function apiSetup(request, env) {
     updatedAt: new Date().toISOString(),
   }
   await writeUsersStore(env, store)
+
+  // KV 没有条件写（CAS），并发初始化只能事后校验。新键的读是写后一致的，
+  // 因此只有「读回来看见的正是别人刚建的那个账号」才能确定这次初始化输了，此时明确报错；
+  // 读回为空（尚未同步 / 极端情况）不算失败，避免误伤正常的首次初始化。
+  const verify = await readUsersStore(env)
+  if (verify.store && verify.store.users.length && verify.store.users[0].id !== user.id) {
+    console.error('Concurrent setup detected: admin created by another request wins for the reader')
+    return json({
+      error: '初始化已由另一个请求完成，请使用刚刚创建成功的账号登录；若无法登录在 KV 中删除 users 记录后重试',
+      conflict: true,
+    }, 409)
+  }
+
   clearLoginFailures(request, '__setup__')
 
   const token = await createSessionToken(user, store.secret)
@@ -967,10 +1028,14 @@ async function apiLogin(request, env) {
   const limited = checkLoginRateLimit(request, username)
   if (limited) return limited
 
-  const { store } = await readUsersStore(env)
-  if (!store) {
+  const usersResult = await readUsersStore(env)
+  if (!usersResult.store) {
+    if (usersResult.corrupted) {
+      return json({ error: '用户数据已损坏，无法登录。请在 Cloudflare KV 中修复或删除 users 记录', corrupted: true }, 500)
+    }
     return json({ error: '控制台尚未初始化，请刷新页面创建管理员账号', needsSetup: true }, 403)
   }
+  const store = usersResult.store
 
   const user = username
     ? store.users.find(item => item.usernameKey === username.toLowerCase())
@@ -995,9 +1060,9 @@ async function apiLogin(request, env) {
 async function apiUsers(request, path, env, principal) {
   if (path === '/api/users') {
     if (request.method === 'GET') {
-      const { store } = await readUsersStore(env)
-      if (!store) return json({ error: '控制台尚未初始化' }, 409)
-      return json(usersResponse(store, principal))
+      const result = await readUsersStore(env)
+      if (!result.store) return usersStoreError(result)
+      return json(usersResponse(result.store, principal))
     }
     if (request.method !== 'POST') return json({ error: '不支持的请求方法' }, 405)
     return await apiCreateUser(request, env, principal)
@@ -1012,11 +1077,12 @@ async function apiCreateUser(request, env, principal) {
   const username = validateUsername(body.username)
   const password = validatePassword(body.password)
 
-  const { store, readonly } = await readUsersStore(env)
-  if (!store) {
-    if (readonly) throw new HttpError(503, '尚未绑定 KV 存储，无法创建用户')
-    return json({ error: '控制台尚未初始化' }, 409)
+  const result = await readUsersStore(env)
+  if (!result.store) {
+    if (result.readonly) throw new HttpError(503, '尚未绑定 KV 存储，无法创建用户')
+    return usersStoreError(result)
   }
+  const store = result.store
   if (body.rev !== undefined && Number(body.rev) !== store.rev) {
     return json({ error: '用户列表已在其他窗口更新，请刷新后重试', rev: store.rev }, 409)
   }
@@ -1051,8 +1117,9 @@ async function apiUpdateUser(request, env, principal) {
   const id = typeof body.id === 'string' ? body.id : ''
   const password = validatePassword(body.password)
 
-  const { store } = await readUsersStore(env)
-  if (!store) return json({ error: '控制台尚未初始化' }, 409)
+  const usersResult = await readUsersStore(env)
+  if (!usersResult.store) return usersStoreError(usersResult)
+  const store = usersResult.store
   if (body.rev !== undefined && Number(body.rev) !== store.rev) {
     return json({ error: '用户列表已在其他窗口更新，请刷新后重试', rev: store.rev }, 409)
   }
@@ -1080,8 +1147,9 @@ async function apiDeleteUser(request, env, principal) {
   const body = await readJsonBody(request)
   const id = typeof body.id === 'string' ? body.id : ''
 
-  const { store } = await readUsersStore(env)
-  if (!store) return json({ error: '控制台尚未初始化' }, 409)
+  const usersResult = await readUsersStore(env)
+  if (!usersResult.store) return usersStoreError(usersResult)
+  const store = usersResult.store
   if (body.rev !== undefined && Number(body.rev) !== store.rev) {
     return json({ error: '用户列表已在其他窗口更新，请刷新后重试', rev: store.rev }, 409)
   }
@@ -1119,10 +1187,26 @@ async function readJsonBody(request) {
   return body
 }
 
+/* 下发给控制器的配置：订阅令牌只以掩码形式出现在 meta 里。
+   令牌本身就是订阅凭据，没有必要在每个读写响应里平铺明文——
+   它会随「复制响应体」进入剪贴板、日志与浏览器历史，而订阅链接（meta.subUrl）
+   才是产品需要展示的那一份。 */
+function publicConfig(config) {
+  const { authToken, ...rest } = config
+  return rest
+}
+
+function maskedAuthToken(config, env) {
+  const token = storedAuthToken(config) || authToken(env)
+  if (!token) return null
+  const tail = token.slice(-4)
+  return '•'.repeat(Math.max(6, Math.min(token.length - 4, 24))) + tail
+}
+
 async function apiSave(request, url, env, principal) {
   const body = await readJsonBody(request)
 
-  const current = await readConfig(env)
+  const current = await readConfig(env, { seed: true })
   if (current.readonly) {
     throw new HttpError(503, '尚未绑定 KV 存储，配置为只读模式。请先绑定 SUB_KV 后重试')
   }
@@ -1137,6 +1221,9 @@ async function apiSave(request, url, env, principal) {
   const defaults = body.defaults !== undefined
     ? validateDefaults(body.defaults)
     : sanitizeDefaults(current.config.defaults)
+  const providerBase = body.providerBase !== undefined
+    ? validateProviderBase(body.providerBase)
+    : sanitizeProviderBase(current.config.providerBase)
   const regionOrder = reconcileRegionOrder(
     body.regionOrder !== undefined ? body.regionOrder : current.config.regionOrder,
     nodes
@@ -1163,12 +1250,13 @@ async function apiSave(request, url, env, principal) {
     defaults,
     regionOrder,
     subscription,
+    providerBase,
     authToken,
   }
   await writeConfig(env, next)
 
   return json({
-    config: next,
+    config: publicConfig(next),
     meta: buildMeta(url, { readonly: false, corrupted: false, config: next }, env, principal),
   })
 }
@@ -1183,7 +1271,9 @@ function buildMeta(url, result, env, principal) {
     readonly: !!result.readonly,
     corrupted: !!result.corrupted,
     hasAuthToken: !!auth,
+    // 令牌来源与掩码末位足够前端判断状态，明文只在订阅链接里出现一次
     authSource: stored ? 'settings' : (envToken ? 'environment' : 'none'),
+    authTokenHint: auth ? maskedAuthToken(result.config, env) : null,
     subUrl: auth ? `${url.origin}/?token=${encodeURIComponent(auth)}` : null,
     authType: principal ? principal.kind : null,
     username: principal ? principal.username : null,
@@ -1302,11 +1392,25 @@ function baseHeaders() {
   }
 }
 
+/* HTML 页面专用：不响应 CORS，禁用一切内嵌能力，并显式声明不需要的浏览器特性 */
+function htmlHeaders() {
+  return {
+    ...baseHeaders(),
+    'cross-origin-resource-policy': 'same-origin',
+    'permissions-policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), magnetometer=(), gyroscope=(), accelerometer=()',
+  }
+}
+
+/* HEAD 请求保留完整头部（含 content-length 语义由运行时处理），但不发送正文 */
+function pageBody(headOnly, html) {
+  return headOnly ? null : html
+}
+
 /* ------------------------------------------------------------------ */
 /* subscription                                                        */
 /* ------------------------------------------------------------------ */
 
-async function serveSubscription(env, config) {
+async function serveSubscription(env, config, headOnly = false) {
   if (!config) {
     try {
       config = (await readConfig(env)).config
@@ -1316,16 +1420,18 @@ async function serveSubscription(env, config) {
     }
   }
 
-  return new Response(buildYaml(config), {
-    headers: {
-      ...baseHeaders(),
-      'content-type': 'text/yaml;charset=UTF-8',
-      'cache-control': 'no-store, max-age=0',
-      'profile-update-interval': '12',
-      ...subscriptionHeaders(config),
-      'access-control-allow-origin': '*',
-    },
-  })
+  const headers = {
+    ...baseHeaders(),
+    'content-type': 'text/yaml;charset=UTF-8',
+    'cache-control': 'no-store, max-age=0',
+    'profile-update-interval': '12',
+    ...subscriptionHeaders(config),
+    'access-control-allow-origin': '*',
+  }
+  // HEAD 用于客户端探活（令牌是否仍然有效）：不渲染 YAML，只回头部
+  if (headOnly) return new Response(null, { status: 200, headers })
+
+  return new Response(buildYaml(config), { headers })
 }
 
 // 未配置流量 / 到期时间时不发送 subscription-userinfo，避免客户端显示虚构额度
@@ -1374,6 +1480,12 @@ function buildYaml(config) {
   const groups = buildProxyGroups({ ...config, nodes: renderable }).map(groupToYaml).join('\n')
   const proxySection = renderable.length ? ['proxies:', proxies] : ['proxies: []']
 
+  // rule-providers 镜像：只替换固定的规则集前缀，未配置时保持默认 CDN
+  const base = sanitizeProviderBase(config.providerBase) || PROVIDER_BASE_DEFAULT
+  const rules = base === PROVIDER_BASE_DEFAULT
+    ? STATIC_RULES.trim()
+    : STATIC_RULES.trim().split(PROVIDER_BASE_DEFAULT).join(base)
+
   return [
     header,
     STATIC_HEAD.trimEnd(),
@@ -1385,7 +1497,7 @@ function buildYaml(config) {
     'proxy-groups:',
     groups,
     '',
-    STATIC_RULES.trim(),
+    rules,
     '',
   ].join('\n')
 }
@@ -1397,19 +1509,32 @@ function yq(value) {
 /**
  * 渲染前的最后一道防线。
  * KV 里可能存在旧版本写入、手工编辑或竞态产生的异常数据，读路径不会再跑一遍
- * validateNodes，所以这里必须自行兜底：枚举字段只允许白名单值，否则整节点跳过，
- * 避免把含换行的值直接拼进 YAML 造成结构破坏或字段注入。
+ * validateNodes，所以这里必须自行兜底：枚举字段只允许白名单值，凭据字段必须真的是凭据，
+ * 否则整节点跳过，避免把含换行的值或 "undefined" 拼进 YAML 造成结构破坏、字段注入，
+ * 或者下发一份客户端必然连不上的配置。
  */
 function safeEnum(value, allowed, fallback) {
   return allowed.includes(value) ? value : fallback
 }
 
+const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 function isRenderableNode(node) {
   if (!node || typeof node !== 'object') return false
   if (!TYPES.includes(node.type)) return false
   if (!Number.isInteger(node.port) || node.port < 1 || node.port > 65535) return false
-  if (typeof node.server !== 'string' || !node.server) return false
-  if (typeof node.name !== 'string' || !node.name) return false
+  if (typeof node.server !== 'string' || !node.server || node.server.length > 253) return false
+  if (typeof node.name !== 'string' || !node.name || node.name.length > 80) return false
+  if (/[\u0000-\u001f\u007f]/.test(node.name) || /[\u0000-\u001f\u007f]/.test(node.server)) return false
+
+  if (node.type === 'vless' || node.type === 'vmess') {
+    if (typeof node.uuid !== 'string' || !UUID_SHAPE.test(node.uuid)) return false
+    // Reality 缺公钥等于连不上：跳过而不是下发 public-key: "undefined"
+    if (node.type === 'vless' && node.reality && (typeof node.publicKey !== 'string' || !node.publicKey)) return false
+    return true
+  }
+  if (typeof node.password !== 'string' || !node.password || /[\u0000-\u001f\u007f]/.test(node.password)) return false
+  if (node.type === 'ss' && !CIPHERS.includes(node.cipher)) return false
   return true
 }
 
@@ -1558,7 +1683,8 @@ function buildProxyGroups(config) {
       if (base === MAIN_GROUP || availableBuckets.has(base)) push(base)
     })
     enabled.forEach(node => {
-      if (node.tags.includes(app.key)) push(node.name)
+      // tags 可能来自旧数据 / 手工编辑的 KV，缺字段不能让整份订阅 500
+      if (Array.isArray(node.tags) && node.tags.includes(app.key)) push(node.name)
     })
     if (!proxies.length) push(MAIN_GROUP)
     groups.push({ name: app.name, icon: app.icon, proxies })
@@ -1580,12 +1706,12 @@ function groupToYaml(group) {
 /* admin page                                                          */
 /* ------------------------------------------------------------------ */
 
-function serveAdmin() {
+function serveAdmin(headOnly = false) {
   const nonce = randomNonce()
   const html = ADMIN_HTML.split('__CSP_NONCE__').join(nonce)
-  return new Response(html, {
+  return new Response(pageBody(headOnly, html), {
     headers: {
-      ...baseHeaders(),
+      ...htmlHeaders(),
       'content-type': 'text/html;charset=UTF-8',
       'cache-control': 'no-store',
       'x-robots-tag': 'noindex, nofollow',
@@ -1596,6 +1722,8 @@ function serveAdmin() {
         "img-src 'self' data:",
         "connect-src 'self'",
         "font-src 'self'",
+        "object-src 'none'",
+        "worker-src 'none'",
         "base-uri 'none'",
         "form-action 'none'",
         "frame-ancestors 'none'",
@@ -1614,9 +1742,21 @@ function randomNonce() {
 /* decoy page                                                          */
 /* ------------------------------------------------------------------ */
 
-function renderDecoy(request) {
+function renderDecoy(request, headOnly = false) {
   const headers = request.headers
   const nonce = randomNonce()
+  // HEAD 只要状态与头部：跳过整页模板拼装，省掉最贵的一段 CPU
+  if (headOnly) {
+    return new Response(null, {
+      status: 200,
+      headers: {
+        ...htmlHeaders(),
+        'content-type': 'text/html;charset=UTF-8',
+        'cache-control': 'no-store',
+        'x-robots-tag': 'noindex, nofollow',
+      },
+    })
+  }
   const cf = request.cf || {}
   const known = value => (value === undefined || value === null || value === '' ? '' : String(value))
   const or = (value, label) => known(value) || label
@@ -2413,12 +2553,13 @@ function renderDecoy(request) {
 </body>
 </html>`
 
-  return new Response(html, {
+  return new Response(pageBody(headOnly, html), {
     headers: {
-      ...baseHeaders(),
+      ...htmlHeaders(),
       'content-type': 'text/html;charset=UTF-8',
       'cache-control': 'no-store',
       'x-robots-tag': 'noindex, nofollow',
+      // default-src 'none' 已覆盖 object / worker / connect，这里只显式列出可能被放宽的指令
       'content-security-policy': "default-src 'none'; script-src 'nonce-" + nonce + "'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
     },
   })
