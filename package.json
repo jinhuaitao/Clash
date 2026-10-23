@@ -1,6 +1,6 @@
 {
   "name": "transit-hub",
-  "version": "2.2.0",
+  "version": "2.4.0",
   "private": true,
   "type": "module",
   "description": "Cloudflare Worker：Clash 订阅生成器 + 可视化管理控制台（节点数据全部由 KV 管理，仓库内不含任何节点）",

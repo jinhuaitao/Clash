@@ -4,7 +4,7 @@ export default {
   },
 }
 
-const VERSION = '2.2.0'
+const VERSION = '2.4.0'
 const CONFIG_KEY = 'config'
 const MAX_NODES = 300
 const MAX_BODY = 256 * 1024
@@ -99,8 +99,9 @@ async function handleRequest(request, env) {
       return serveAdmin()
     }
     const token = url.searchParams.get('token') || ''
-    if (token && tokenEqual(token, authToken(env))) {
-      return await serveSubscription(env)
+    if (token) {
+      const access = await subscriptionAccess(env, token)
+      if (access) return await serveSubscription(env, access.config)
     }
     return renderDecoy(request)
   } catch (err) {
@@ -124,9 +125,22 @@ function authToken(env) {
   return typeof value === 'string' ? value : ''
 }
 
-function adminToken(env) {
-  const dedicated = env && typeof env.ADMIN_TOKEN === 'string' ? env.ADMIN_TOKEN : ''
-  return dedicated || authToken(env)
+function dedicatedAdminToken(env) {
+  const value = env && env.ADMIN_TOKEN
+  return typeof value === 'string' && value.length > 0 ? value : ''
+}
+
+async function readAccessConfig(env) {
+  try {
+    return (await readConfig(env)).config
+  } catch (err) {
+    console.error('Auth config read failed:', err)
+    return null
+  }
+}
+
+function effectiveAuthToken(config, env) {
+  return storedAuthToken(config) || authToken(env)
 }
 
 function tokenEqual(a, b) {
@@ -139,14 +153,26 @@ function tokenEqual(a, b) {
   return diff === 0
 }
 
-function isAdmin(request, env) {
-  const expected = adminToken(env)
-  if (!expected) return false
+async function isAdmin(request, env) {
   const header = request.headers.get('authorization') || ''
   let supplied = ''
   if (/^bearer\s/i.test(header)) supplied = header.slice(7).trim()
   if (!supplied) supplied = request.headers.get('x-admin-token') || ''
-  return tokenEqual(supplied, expected)
+  if (!supplied) return false
+
+  const dedicated = dedicatedAdminToken(env)
+  if (dedicated) return tokenEqual(supplied, dedicated)
+
+  const config = await readAccessConfig(env)
+  const expected = effectiveAuthToken(config, env)
+  return expected ? tokenEqual(supplied, expected) : false
+}
+
+async function subscriptionAccess(env, token) {
+  const config = await readAccessConfig(env)
+  const expected = effectiveAuthToken(config, env)
+  if (!expected || !tokenEqual(token, expected)) return null
+  return { config }
 }
 
 /* ------------------------------------------------------------------ */
@@ -159,7 +185,7 @@ function kvBinding(env) {
 }
 
 function emptyConfig() {
-  return { v: 1, rev: 0, updatedAt: null, nodes: [], defaults: {}, regionOrder: {} }
+  return { v: 1, rev: 0, updatedAt: null, nodes: [], defaults: {}, regionOrder: {}, subscription: {}, authToken: '' }
 }
 
 function sanitizeDefaults(input) {
@@ -170,6 +196,48 @@ function sanitizeDefaults(input) {
   if (text(input.vlessPublicKey)) out.vlessPublicKey = text(input.vlessPublicKey)
   if (text(input.vlessShortId)) out.vlessShortId = text(input.vlessShortId)
   if (text(input.vlessServername)) out.vlessServername = text(input.vlessServername)
+  return out
+}
+
+const MAX_TOTAL_GB = 1048576
+const AUTH_TOKEN_MIN = 16
+const AUTH_TOKEN_MAX = 256
+
+function storedAuthToken(config) {
+  const value = config && config.authToken
+  if (typeof value !== 'string') return ''
+  const token = value.trim()
+  return token.length > AUTH_TOKEN_MAX ? '' : token
+}
+
+function validateAuthToken(value) {
+  if (typeof value !== 'string') throw new HttpError(400, '订阅令牌格式不正确', 'authToken')
+  const token = value.trim()
+  if (!token) return ''
+  if (token.length < AUTH_TOKEN_MIN) {
+    throw new HttpError(400, `订阅令牌至少需要 ${AUTH_TOKEN_MIN} 个字符`, 'authToken')
+  }
+  if (token.length > AUTH_TOKEN_MAX) {
+    throw new HttpError(400, `订阅令牌不能超过 ${AUTH_TOKEN_MAX} 个字符`, 'authToken')
+  }
+  if (/[\s\u0000-\u001f\u007f]/.test(token)) {
+    throw new HttpError(400, '订阅令牌不能包含空格或控制字符', 'authToken')
+  }
+  return token
+}
+
+// 订阅信息只用于客户端展示（流量条 / 到期提示），留空则不发送相应响应头
+function sanitizeSubscription(input) {
+  const out = {}
+  if (!input || typeof input !== 'object') return out
+  const total = Number(input.totalGB)
+  if (Number.isFinite(total) && total > 0) {
+    out.totalGB = Math.min(Math.round(total * 100) / 100, MAX_TOTAL_GB)
+  }
+  if (typeof input.expire === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(input.expire)) {
+    const time = Date.parse(`${input.expire}T23:59:59Z`)
+    if (Number.isFinite(time)) out.expire = input.expire
+  }
   return out
 }
 
@@ -209,6 +277,8 @@ async function readConfig(env) {
         nodes: parsed.nodes,
         defaults: sanitizeDefaults(parsed.defaults),
         regionOrder: reconcileRegionOrder(parsed.regionOrder, parsed.nodes),
+        subscription: sanitizeSubscription(parsed.subscription),
+        authToken: storedAuthToken(parsed),
       },
       readonly: false,
       corrupted: false,
@@ -467,7 +537,7 @@ function validateNodes(input) {
 /* ------------------------------------------------------------------ */
 
 async function handleApi(request, url, path, env) {
-  if (!isAdmin(request, env)) {
+  if (!(await isAdmin(request, env))) {
     return json({ error: '管理令牌无效或未配置' }, 401)
   }
 
@@ -538,6 +608,15 @@ async function apiSave(request, url, env) {
     body.regionOrder !== undefined ? body.regionOrder : current.config.regionOrder,
     nodes
   )
+  const subscription = body.subscription !== undefined
+    ? sanitizeSubscription(body.subscription)
+    : sanitizeSubscription(current.config.subscription)
+  let authToken = storedAuthToken(current.config)
+  if (body.authToken !== undefined) {
+    const candidate = validateAuthToken(body.authToken)
+    // 空值表示沿用当前令牌，避免误清空后无法登录或生成订阅链接
+    if (candidate) authToken = candidate
+  }
   const next = {
     v: 1,
     rev: (current.config.rev || 0) + 1,
@@ -545,18 +624,22 @@ async function apiSave(request, url, env) {
     nodes,
     defaults,
     regionOrder,
+    subscription,
+    authToken,
   }
   await writeConfig(env, next)
 
   return json({
     config: next,
-    meta: buildMeta(url, { readonly: false, corrupted: false }, env),
+    meta: buildMeta(url, { readonly: false, corrupted: false, config: next }, env),
   })
 }
 
 function buildMeta(url, result, env) {
-  const dedicated = !!(env && typeof env.ADMIN_TOKEN === 'string' && env.ADMIN_TOKEN.length > 0)
-  const auth = authToken(env)
+  const dedicated = dedicatedAdminToken(env)
+  const stored = storedAuthToken(result.config)
+  const envToken = authToken(env)
+  const auth = stored || envToken
   return {
     version: VERSION,
     kv: !!kvBinding(env),
@@ -564,6 +647,7 @@ function buildMeta(url, result, env) {
     corrupted: !!result.corrupted,
     hasAuthToken: !!auth,
     authMode: dedicated ? 'dedicated' : 'shared',
+    authSource: stored ? 'settings' : (envToken ? 'environment' : 'none'),
     subUrl: auth ? `${url.origin}/?token=${encodeURIComponent(auth)}` : null,
   }
 }
@@ -627,26 +711,38 @@ function baseHeaders() {
 /* subscription                                                        */
 /* ------------------------------------------------------------------ */
 
-async function serveSubscription(env) {
-  let config
-  try {
-    config = (await readConfig(env)).config
-  } catch (err) {
-    console.error('Subscription fallback to empty config:', err)
-    config = emptyConfig()
+async function serveSubscription(env, config) {
+  if (!config) {
+    try {
+      config = (await readConfig(env)).config
+    } catch (err) {
+      console.error('Subscription fallback to empty config:', err)
+      config = emptyConfig()
+    }
   }
 
-  const timestamp = Math.floor(Date.now() / 1000)
   return new Response(buildYaml(config), {
     headers: {
       ...baseHeaders(),
       'content-type': 'text/yaml;charset=UTF-8',
       'cache-control': 'no-store, max-age=0',
       'profile-update-interval': '12',
-      'subscription-userinfo': `upload=0;download=0;total=10737418240000;expire=${timestamp}`,
+      ...subscriptionHeaders(config),
       'access-control-allow-origin': '*',
     },
   })
+}
+
+// 未配置流量 / 到期时间时不发送 subscription-userinfo，避免客户端显示虚构额度
+function subscriptionHeaders(config) {
+  const info = config.subscription || {}
+  const totalGB = Number(info.totalGB)
+  const expire = info.expire ? Math.floor(Date.parse(`${info.expire}T23:59:59Z`) / 1000) : 0
+  if (!(totalGB > 0) && !expire) return {}
+  const parts = ['upload=0', 'download=0']
+  parts.push(`total=${totalGB > 0 ? Math.round(totalGB * 1024 * 1024 * 1024) : 0}`)
+  if (expire) parts.push(`expire=${expire}`)
+  return { 'subscription-userinfo': parts.join('; ') }
 }
 
 function buildYaml(config) {
@@ -658,11 +754,17 @@ function buildYaml(config) {
     timeZone: 'Asia/Shanghai',
   }).format(new Date()).replace(/\//g, '-')
 
+  const info = config.subscription || {}
+  const infoBits = []
+  if (Number(info.totalGB) > 0) infoBits.push(`流量 ${info.totalGB} GB`)
+  if (info.expire) infoBits.push(`到期 ${info.expire}`)
+
   const header = [
     '# ============================================================',
     '# Transit Hub · Clash Subscription',
     `# 更新时间: ${time} (Asia/Shanghai)`,
     `# 节点: ${config.nodes.length} 个 · 已启用: ${enabled.length} 个`,
+    ...(infoBits.length ? [`# ${infoBits.join(' · ')}`] : []),
     '# 由 Transit Hub Console 自动生成，请勿手动编辑',
     '# ============================================================',
     '',

@@ -1,5 +1,6 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import vm from 'node:vm';
 import path from 'node:path';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -19,11 +20,20 @@ if (/<\/script/i.test(adminJs)) {
   throw new Error('admin/app.js must not contain a literal closing script tag');
 }
 
+try {
+  new vm.Script(adminJs, { filename: 'admin/app.js' });
+} catch (err) {
+  throw new Error(`admin/app.js syntax error: ${err.message}`);
+}
+
+const version = JSON.parse(pkg).version;
+
 let adminHtml = adminTemplate
+  .replace(/__APP_VERSION__/g, version)
   .replace('/*__CSS__*/', () => adminCss)
   .replace('/*__JS__*/', () => adminJs);
 
-for (const marker of ['/*__CSS__*/', '/*__JS__*/']) {
+for (const marker of ['/*__CSS__*/', '/*__JS__*/', '__APP_VERSION__']) {
   if (adminHtml.includes(marker)) throw new Error(`Unreplaced admin marker: ${marker}`);
 }
 if (!adminHtml.includes('__CSP_NONCE__')) throw new Error('Admin HTML is missing CSP nonce placeholders');
@@ -42,7 +52,6 @@ for (const marker of ['__STATIC_HEAD__', '__STATIC_RULES__', '__ADMIN_HTML__']) 
   if (output.includes(marker)) throw new Error(`Unreplaced worker marker: ${marker}`);
 }
 
-const version = JSON.parse(pkg).version;
 const banner = `/*! Transit Hub v${version} | Cloudflare Worker | built ${new Date().toISOString()} */\n`;
 output = banner + output;
 
