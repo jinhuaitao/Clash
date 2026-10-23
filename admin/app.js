@@ -293,8 +293,6 @@
     el.navCount = $('#nav-count');
     el.modePill = $('#mode-pill');
     el.modePillText = $('#mode-pill-text');
-    el.topCopy = $('#top-copy');
-    el.topAdd = $('#top-add');
 
     el.kvAlert = $('#kv-alert');
     el.corruptAlert = $('#corrupt-alert');
@@ -428,6 +426,7 @@
     el.setPbk = $('#set-pbk');
     el.setSid = $('#set-sid');
     el.setSni = $('#set-sni');
+    el.setPort = $('#set-port');
     el.setTotal = $('#set-total');
     el.setExpire = $('#set-expire');
     el.themeMode = $('#theme-mode');
@@ -549,7 +548,7 @@
       if (mobileIcon) mobileIcon.setAttribute('href', href);
       el.mobileTheme.setAttribute('aria-label', dark ? '切换到浅色模式' : '切换到深色模式');
     }
-    if (el.themeColor) el.themeColor.setAttribute('content', dark ? '#070b14' : '#f5f6fa');
+    if (el.themeColor) el.themeColor.setAttribute('content', dark ? '#070b13' : '#f4f5fa');
     if (el.themeMode) {
       $$('button[data-theme-mode]', el.themeMode).forEach(function (button) {
         var active = button.dataset.themeMode === mode;
@@ -1106,7 +1105,7 @@
         return '<button class="mini-item" type="button" data-edit-id="' + esc(node.id) + '">' +
           '<span class="mini-avatar avatar-' + esc(node.region) + '">' + region.flag + '</span>' +
           '<span class="mini-main"><span class="mini-name">' + esc(node.name) + disabled + '</span>' +
-          '<span class="mini-sub">' + esc(type.label) + ' · ' + esc(node.server) + '</span></span>' +
+          '<span class="mini-sub">' + esc(node.server) + ':' + esc(node.port) + '</span></span>' +
           '<span class="type-badge t-' + esc(node.type) + '"><span class="dot"></span>' + esc(type.label) + '</span>' +
           '</button>';
       }).join('');
@@ -1646,6 +1645,7 @@
     setField(el.setPbk, defaults.vlessPublicKey || '');
     setField(el.setSid, defaults.vlessShortId || '');
     setField(el.setSni, defaults.vlessServername || '');
+    setField(el.setPort, defaults.vlessPort > 0 ? defaults.vlessPort : '');
     setField(el.setTotal, info.totalGB > 0 ? info.totalGB : '');
     setField(el.setExpire, info.expire || '');
     el.settingsUpdated.textContent = state.config.updatedAt
@@ -1759,6 +1759,16 @@
 
     var sni = hostError(el.setSni.value, 'setSni', 'SNI / 回落域名', false, errors);
     if (sni) defaults.vlessServername = sni;
+
+    var portRaw = String(el.setPort.value || '').trim();
+    if (portRaw) {
+      var port = Number(portRaw);
+      if (!/^\d+$/.test(portRaw) || !Number.isInteger(port) || port < 1 || port > 65535) {
+        errors.push({ key: 'setPort', message: '需为 1–65535 的整数' });
+      } else {
+        defaults.vlessPort = port;
+      }
+    }
 
     var subscription = {};
     var totalRaw = String(el.setTotal.value || '').trim();
@@ -3005,7 +3015,7 @@
 
     if (el.linksFootNote) {
       if (errors.length) el.linksFootNote.textContent = '已跳过 ' + errors.length + ' 条无法识别的链接';
-      else if (!items.length) el.linksFootNote.textContent = '支持 VLESS、Hysteria2、Trojan、VMess、Shadowsocks';
+      else if (!items.length) el.linksFootNote.textContent = '导入后可在节点管理中继续编辑';
       else el.linksFootNote.textContent = '命名冲突会自动追加序号';
     }
   }
@@ -3210,7 +3220,7 @@
     clearFormErrors();
     setField(el.fieldName, '');
     setField(el.fieldServer, '');
-    setField(el.fieldPort, 443);
+    setField(el.fieldPort, preset.vlessPort || 443);
     setField(el.fieldRegion, 'hk');
     setTags([]);
     setSwitch(el.fieldEnabled, true);
@@ -4116,10 +4126,10 @@
     });
     el.heroPreview.addEventListener('click', function () { switchView('preview'); });
 
-    [el.topAdd, el.nodesAdd, el.heroAdd, el.emptyAdd].forEach(function (button) {
-      button.addEventListener('click', function () { openEditor(null); });
+    [el.nodesAdd, el.heroAdd, el.emptyAdd].forEach(function (button) {
+      if (button) button.addEventListener('click', function () { openEditor(null); });
     });
-    [el.topCopy, el.previewCopySub].forEach(function (button) {
+    [el.previewCopySub].forEach(function (button) {
       if (button) button.addEventListener('click', copySubscription);
     });
     [el.nodesLinks, el.emptyLinks].forEach(function (button) {
@@ -4339,6 +4349,7 @@
       setField(el.setPbk, '');
       setField(el.setSid, '');
       setField(el.setSni, '');
+      setField(el.setPort, '');
       clearSettingsErrors();
       toast('已清空 VLESS 预设，点击「保存设置」后生效', 'info');
     });

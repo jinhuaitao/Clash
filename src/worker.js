@@ -4,7 +4,7 @@ export default {
   },
 }
 
-const VERSION = '2.6.0'
+const VERSION = '2.6.1'
 const CONFIG_KEY = 'config'
 const USERS_KEY = 'users'
 const MAX_NODES = 300
@@ -430,6 +430,8 @@ function sanitizeDefaults(input) {
   if (text(input.vlessPublicKey)) out.vlessPublicKey = text(input.vlessPublicKey)
   if (text(input.vlessShortId)) out.vlessShortId = text(input.vlessShortId)
   if (text(input.vlessServername)) out.vlessServername = text(input.vlessServername)
+  const port = Number(input.vlessPort)
+  if (Number.isInteger(port) && port >= 1 && port <= 65535) out.vlessPort = port
   return out
 }
 
@@ -653,6 +655,10 @@ function validateDefaults(input) {
   if (cleaned.vlessServername) {
     const sni = hostValue(cleaned.vlessServername, 'defaults.vlessServername', '预设 SNI / 回落域名')
     cleaned.vlessServername = sni
+  }
+  const rawPort = input && typeof input === 'object' ? input.vlessPort : undefined
+  if (rawPort !== undefined && rawPort !== null && rawPort !== '' && cleaned.vlessPort === undefined) {
+    throw new HttpError(400, '预设端口需为 1–65535 的整数', 'defaults.vlessPort')
   }
   return cleaned
 }

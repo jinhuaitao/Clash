@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="robots" content="noindex, nofollow">
-<meta name="theme-color" content="#f5f6fa">
+<meta name="theme-color" content="#f4f5fa">
 <title>Transit Hub · 订阅控制台</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='11' fill='%234f46e5'/%3E%3Cpath d='M12 25.5 20 12l8 13.5-8 4.6-8-4.6Z' fill='none' stroke='white' stroke-width='1.8' stroke-linejoin='round'/%3E%3C/svg%3E">
 <style>/*__CSS__*/</style>
@@ -243,12 +243,6 @@
       <div class="crumbs"><span>控制台</span><span class="crumb-sep">/</span><strong id="crumb">概览</strong></div>
       <div class="top-actions">
         <span class="mode-pill" id="mode-pill"><span class="status-dot"></span><span id="mode-pill-text">订阅在线</span></span>
-        <button class="btn btn-secondary btn-sm" type="button" id="top-copy">
-          <svg class="icon"><use href="#i-link"></use></svg><span>订阅链接</span>
-        </button>
-        <button class="btn btn-primary btn-sm" type="button" id="top-add">
-          <svg class="icon"><use href="#i-plus"></use></svg><span>添加节点</span>
-        </button>
       </div>
     </header>
 
@@ -361,22 +355,22 @@
         </section>
 
         <div class="stat-grid">
-          <article class="stat-card">
+          <article class="stat-card" data-tone="indigo">
             <div class="stat-top"><span class="stat-icon tone-indigo"><svg class="icon"><use href="#i-server"></use></svg></span><span class="stat-badge" id="stat-total-badge">全部</span></div>
             <div class="stat-value" id="stat-total">0</div>
             <div class="stat-label">节点总数</div>
           </article>
-          <article class="stat-card">
+          <article class="stat-card" data-tone="emerald">
             <div class="stat-top"><span class="stat-icon tone-emerald"><svg class="icon"><use href="#i-power"></use></svg></span><span class="stat-badge tone-emerald" id="stat-enabled-badge">在线</span></div>
             <div class="stat-value" id="stat-enabled">0</div>
             <div class="stat-label">已启用节点</div>
           </article>
-          <article class="stat-card">
+          <article class="stat-card" data-tone="cyan">
             <div class="stat-top"><span class="stat-icon tone-cyan"><svg class="icon"><use href="#i-layers"></use></svg></span><span class="stat-badge" id="stat-types-hint">协议</span></div>
             <div class="stat-value" id="stat-types">0</div>
             <div class="stat-label">协议类型</div>
           </article>
-          <article class="stat-card">
+          <article class="stat-card" data-tone="amber">
             <div class="stat-top"><span class="stat-icon tone-amber"><svg class="icon"><use href="#i-route"></use></svg></span><span class="stat-badge" id="stat-regions-hint">策略组</span></div>
             <div class="stat-value" id="stat-regions">0</div>
             <div class="stat-label">策略组总数</div>
@@ -429,7 +423,7 @@
           <div>
             <span class="eyebrow">Nodes</span>
             <h1>节点管理</h1>
-            <p class="page-sub">批量选择后可一次启用、停用、换组或删除；用 ↑ ↓ 调整顺序，按分组筛选后只调整该分组内的独立顺序。点击行尾 ⋯ 可复制分享链接。</p>
+            <p class="page-sub">批量选择后可一次启用、停用、换组或删除；↑ ↓ 调整顺序，行尾 ⋯ 提供分享与复制操作。</p>
           </div>
           <div class="page-actions">
             <button class="btn btn-secondary" type="button" id="nodes-export"><svg class="icon"><use href="#i-download"></use></svg>导出备份</button>
@@ -651,12 +645,19 @@
                 <div class="field-error" data-error="setSid"></div>
               </div>
             </div>
-            <div class="field">
-              <label for="set-sni">SNI / 回落域名</label>
-              <input id="set-sni" placeholder="www.example.com" spellcheck="false" autocomplete="off">
-              <div class="field-error" data-error="setSni"></div>
-              <div class="field-hint">新建 VLESS 节点时，UUID、公钥、Short ID、SNI 会自动填入这些值。</div>
+            <div class="field-row">
+              <div class="field">
+                <label for="set-sni">SNI / 回落域名</label>
+                <input id="set-sni" placeholder="www.example.com" spellcheck="false" autocomplete="off">
+                <div class="field-error" data-error="setSni"></div>
+              </div>
+              <div class="field field-port">
+                <label for="set-port">默认端口</label>
+                <input id="set-port" type="number" min="1" max="65535" inputmode="numeric" placeholder="443">
+                <div class="field-error" data-error="setPort"></div>
+              </div>
             </div>
+            <p class="field-hint">新建 VLESS 节点时，UUID、公钥、Short ID、SNI 与端口会自动填入这些值；端口留空则使用 443。</p>
           </section>
 
           <div class="settings-grid">
