@@ -1,10 +1,26 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 import path from 'node:path';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const read = name => readFile(path.join(root, name), 'utf8');
+
+/*
+ * 可选静态检查：仓库里存在 scripts/check.mjs 时才执行。
+ * CI（Cloudflare Builds）可能只包含构建所需文件，缺这个脚本不应阻断部署；
+ * 本地开发时它会先跑一遍，有 error 级问题直接中止构建。
+ */
+const checkerPath = path.join(root, 'scripts/check.mjs');
+if (existsSync(checkerPath)) {
+  const checked = spawnSync(process.execPath, [checkerPath, '--strict'], { stdio: 'inherit' });
+  if (checked.error) throw new Error(`静态检查无法执行：${checked.error.message}`);
+  if (checked.status !== 0) throw new Error('静态检查未通过，已中止构建');
+} else {
+  console.log('· 跳过静态检查（未找到 scripts/check.mjs）');
+}
 
 const [workerSource, staticHead, staticRules, adminTemplate, adminCss, adminJs, pkg] = await Promise.all([
   read('src/worker.js'),

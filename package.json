@@ -7,8 +7,8 @@
   "scripts": {
     "check": "node scripts/check.mjs",
     "check:selftest": "node scripts/check.mjs --selftest",
-    "build": "node scripts/check.mjs --strict && node build.mjs",
-    "deploy": "npm run build && wrangler deploy",
+    "build": "node build.mjs",
+    "deploy": "node build.mjs && wrangler deploy",
     "tail": "wrangler tail"
   },
   "devDependencies": {

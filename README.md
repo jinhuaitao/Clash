@@ -232,7 +232,9 @@ npx wrangler dev
 | `class-without-style` / `unused-class` | 用了但没样式、定义了但没人用 |
 | `duplicate-binding` / `empty-catch` | 同一事件重复绑定、异常被静默吞掉 |
 
-`npm run build` 会先跑一遍 `check --strict`，有 error 级问题直接中断构建，不会把坏产物发出去。检查器本身带自测：
+检查器是**可选**的：`build.mjs` 只在 `scripts/check.mjs` 存在时才会调用它。这样本地开发能享受前置检查，而只包含构建必需文件的 CI 环境不会因为缺这个脚本而失败（构建日志会打印「跳过静态检查」）。如果希望 CI 也执行检查，把 `scripts/check.mjs` 一并提交即可。
+
+检查器本身带自测：
 
 ```bash
 npm run check            # 检查当前代码
@@ -359,7 +361,7 @@ node build.mjs && node test/worker.test.mjs # 接口 / 安全回归测试
 - 订阅 YAML 渲染增加最后一道防线：`type` / `network` / `flow` / `fingerprint` / `cipher` / `port` 只接受白名单值，非法节点整条跳过；策略组只引用实际渲染出来的节点，避免 Clash 报 `proxy not found`。KV 里存在旧版本或手工写入的脏数据时不会再破坏 YAML 结构。
 - 用户库解析失败（`corrupted`）时禁止通过 `/api/setup` 重新初始化，防止任何访问者覆盖原数据抢占管理员；恢复需由持有 KV 写权限的人删除 `users` 记录。
 - 订阅路径（`/?token=`）增加独立限流（240 次/分钟/IP），与 `/api/*` 的 120 次分开计数，不影响客户端周期性刷新。
-- 新增零依赖静态检查器 `scripts/check.mjs` 与自测，`npm run build` 前置 `check --strict`，把「声明前使用」「el 缓存缺失」「错误锚点缺失/重复」这类语法合法、运行时才炸的问题拦在构建期。
+- 新增零依赖静态检查器 `scripts/check.mjs` 与自测，把「声明前使用」「el 缓存缺失」「错误锚点缺失/重复」这类语法合法、运行时才炸的问题拦在构建期。它是**可选**依赖：`build.mjs` 仅在文件存在时调用，缺失时打印「跳过静态检查」继续构建，不会阻断只含构建必需文件的 CI。
 
 ### v2.6.1
 
