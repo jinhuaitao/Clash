@@ -426,11 +426,11 @@
           <div>
             <span class="eyebrow">Nodes</span>
             <h1>节点管理</h1>
-            <p class="page-sub">批量选择后可一次启用、停用、换组或删除；↑ ↓ 调整顺序，行尾 ⋯ 提供分享与复制操作。</p>
+            <p class="page-sub">批量选择后可一次启用、停用、换组或删除；成员账号也能添加只对自己生效的节点。</p>
           </div>
           <div class="page-actions">
-            <button class="btn btn-secondary" type="button" id="nodes-export"><svg class="icon"><use href="#i-download"></use></svg>导出备份</button>
-            <button class="btn btn-secondary" type="button" id="nodes-import"><svg class="icon"><use href="#i-upload"></use></svg>导入备份</button>
+            <button class="btn btn-secondary" type="button" id="nodes-export" data-owner-only><svg class="icon"><use href="#i-download"></use></svg>导出备份</button>
+            <button class="btn btn-secondary" type="button" id="nodes-import" data-owner-only><svg class="icon"><use href="#i-upload"></use></svg>导入备份</button>
             <button class="btn btn-secondary" type="button" id="nodes-links"><svg class="icon"><use href="#i-link"></use></svg>分享链接</button>
             <button class="btn btn-primary" type="button" id="nodes-add"><svg class="icon"><use href="#i-plus"></use></svg>添加节点</button>
             <input type="file" id="import-file" accept="application/json,.json" hidden>
@@ -561,7 +561,7 @@
           <div>
             <span class="eyebrow">Accounts</span>
             <h1>用户管理</h1>
-            <p class="page-sub">所有者可添加账号并分配可用节点；成员只能查看分配给自己的节点并修改自己的密码。</p>
+            <p class="page-sub">所有者可添加账号并分配共享节点；成员可以维护自己的节点，但不会改动这里分配的配置。</p>
           </div>
           <div class="page-actions">
             <button class="btn btn-primary" type="button" id="user-add">
@@ -588,7 +588,7 @@
               <label for="user-role">账号角色</label>
               <div class="select-wrap select-block">
                 <select id="user-role">
-                  <option value="member">成员 · 只读，只能使用分配的节点</option>
+                  <option value="member">成员 · 使用分配的节点，可添加个人节点</option>
                   <option value="owner">所有者 · 可管理账号与全部节点</option>
                 </select>
                 <svg class="icon"><use href="#i-chevron"></use></svg>
@@ -629,7 +629,7 @@
           <div>
             <span class="eyebrow">Settings</span>
             <h1>设置</h1>
-            <p class="page-sub">管理订阅令牌、VLESS 预设与分流参数；成员账号只能查看自己的节点与订阅。</p>
+            <p class="page-sub">管理订阅令牌、VLESS 预设与分流参数；成员账号可以查看自己的节点、订阅与密码。</p>
           </div>
           <div class="page-head-meta"><span id="settings-updated">—</span></div>
         </div>
@@ -638,7 +638,7 @@
           <div class="section-head">
             <div>
               <h3>我的账号</h3>
-              <p>成员账号为只读：可查看分配给自己的节点、复制订阅链接并修改密码。</p>
+              <p>共享节点由所有者维护；你添加的节点只保存在自己的账号下，订阅链接会合并两者。</p>
             </div>
             <span class="role-badge" id="account-role">成员</span>
           </div>
@@ -658,7 +658,7 @@
               <input id="account-sub-url" class="token-input" readonly spellcheck="false">
               <button class="btn btn-quiet btn-sm" type="button" id="account-sub-copy">复制</button>
             </div>
-            <div class="field-hint">链接只包含分配给你的节点；修改密码后旧链接立即失效，这里会自动更新。为避免明文外泄，链接默认掩码显示，点「复制」获取完整地址。</div>
+            <div class="field-hint">链接包含分配给你的共享节点和你添加的个人节点；修改密码后旧链接立即失效，这里会自动更新。为避免明文外泄，链接默认掩码显示，点「复制」获取完整地址。</div>
           </div>
           <form class="account-password" id="password-form" novalidate>
             <div class="section-head"><h3>修改密码</h3><p>修改成功后，其他设备上的登录与旧订阅链接会立即失效。</p></div>

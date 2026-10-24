@@ -6,6 +6,7 @@
   var THEME_KEY = 'th.theme';
   var MAIN_GROUP = '🌍选择节点';
   var MAX_NODES = 300;
+  var MAX_PERSONAL_NODES = 100;
   var MAX_TOTAL_GB = 1048576;
   var THEME_MODES = ['system', 'light', 'dark'];
   var MAX_USERS = 20;
@@ -162,11 +163,16 @@
     }
   }
 
-  function randomId() {
+  function randomId(prefix) {
+    var head = prefix || 'n_';
     if (window.crypto && typeof window.crypto.randomUUID === 'function') {
-      return 'n_' + window.crypto.randomUUID();
+      return head + window.crypto.randomUUID();
     }
-    return 'n_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+    return head + Math.random().toString(36).slice(2) + Date.now().toString(36);
+  }
+
+  function newNodeId() {
+    return randomId(isOwner() ? 'n_' : 'p_');
   }
 
   function generateUuid() {
@@ -1016,8 +1022,11 @@
 
     el.navCount.textContent = String(total);
     el.modePill.classList.add('is-warning');
-    if (!isOwner()) {
-      el.modePillText.textContent = '成员 · 只读';
+    if (!isOwner() && (!meta.kv || meta.readonly || meta.corrupted)) {
+      el.modePillText.textContent = (!meta.kv || meta.readonly) ? '只读模式' : '配置异常';
+    } else if (!isOwner()) {
+      el.modePill.classList.remove('is-warning');
+      el.modePillText.textContent = '成员 · ' + personalNodes().length + ' 个人节点';
     } else if (!meta.kv || meta.readonly) {
       el.modePillText.textContent = '只读模式';
     } else if (meta.corrupted) {
@@ -1037,11 +1046,25 @@
     el.emptySubAlert.hidden = !(total > 0 && enabled.length === 0);
     el.heroNodeCount.textContent = String(enabled.length);
     el.heroStatusText.textContent = !isOwner()
-      ? '成员访问 · 仅显示已分配的节点'
+      ? '成员访问 · 共享节点 + 个人节点'
       : (kvMissing ? '只读预览 · 尚未连接存储' : (meta.corrupted ? '配置异常 · 当前载入默认节点' : '订阅服务运行中'));
     if (el.heroVersion) el.heroVersion.textContent = 'v' + (meta.version || '2.0.0');
 
-    if (!total) {
+    var personalCount = personalNodes().length;
+    if (!isOwner()) {
+      if (!total) {
+        el.heroTitle.innerHTML = '还没有可用节点，<br class="hero-br">先添加一条自己的线路。';
+        el.heroDesc.textContent = '你添加的节点只保存在自己的账号下，不影响所有人的共享配置。';
+      } else if (!enabled.length) {
+        el.heroTitle.innerHTML = '所有节点已停用，<br class="hero-br">订阅暂时为空。';
+        el.heroDesc.textContent = '启用自己的节点，或联系所有者启用共享节点；客户端刷新订阅后才会拿到新配置。';
+      } else {
+        el.heroTitle.innerHTML = '节点已就绪，随时同步<br class="hero-br">至你的每一台设备。';
+        el.heroDesc.textContent = personalCount
+          ? '其中 ' + personalCount + ' 个是你自己的节点，修改只影响当前账号；共享节点由所有者维护。'
+          : '共享节点由所有者维护；点击「添加节点」可以创建只对自己生效的线路。';
+      }
+    } else if (!total) {
       el.heroTitle.innerHTML = '还没有节点，<br class="hero-br">从第一条线路开始。';
       el.heroDesc.textContent = '添加节点后，这里会自动生成订阅链接与 Clash 配置，所有数据都保存在你自己的 KV 中。';
     } else if (!enabled.length) {
@@ -1050,9 +1073,6 @@
     } else {
       el.heroTitle.innerHTML = '节点已就绪，随时同步<br class="hero-br">至你的每一台设备。';
       el.heroDesc.textContent = '编辑节点或调整分组后无需重新部署，客户端下次刷新订阅即可获取最新配置。';
-    }
-    if (!isOwner()) {
-      el.heroDesc.textContent = '当前账号为只读，仅显示所有者分配的节点；订阅链接会包含这些节点。';
     }
   }
 
@@ -1137,8 +1157,8 @@
           '<span class="mini-main"><span class="mini-name">' + esc(node.name) + disabled + '</span>' +
           '<span class="mini-sub">' + esc(node.server) + ':' + esc(node.port) + '</span></span>' +
           '<span class="type-badge t-' + esc(node.type) + '"><span class="dot"></span>' + esc(type.label) + '</span>';
-        // 成员只读：节点速览保持可读，但不渲染成能打开编辑器的按钮
-        return isOwner()
+        // 只有能改的节点才渲染成按钮；共享节点保持只读展示
+        return editableNode(node)
           ? '<button class="mini-item" type="button" data-edit-id="' + esc(node.id) + '">' + inner + '</button>'
           : '<div class="mini-item">' + inner + '</div>';
       }).join('');
@@ -1153,7 +1173,7 @@
     if (el.overviewAuthNote) {
       el.overviewAuthNote.textContent = isOwner()
         ? '登录使用账号密码，可在左侧「用户管理」添加或重置用户；订阅令牌只用于订阅链接。'
-        : '成员账号为只读，可用节点与订阅链接由所有者分配。';
+        : '成员账号可添加和修改自己的节点；共享节点与订阅链接由所有者分配。';
     }
     el.sysRev.textContent = '#' + state.rev;
     el.sysUpdated.textContent = state.config.updatedAt ? formatFull(state.config.updatedAt) : '尚未保存';
@@ -1302,20 +1322,38 @@
       }).join('') + '</div>'
       : '';
 
+    var shared = isSharedNode(node);
+    var personal = !isOwner() && !shared;
+
     var badges = '';
     if (!node.enabled) badges += '<span class="mini-badge">已停用</span>';
     if (node.showInMain === false) badges += '<span class="mini-badge" title="不在「选择节点」中显示">不入主组</span>';
+    if (personal) badges += '<span class="mini-badge is-personal" title="仅当前账号可见">我的</span>';
+    if (shared) badges += '<span class="mini-badge" title="由所有者分配，成员不能修改">共享</span>';
 
     var moveHtml = '';
-    if (sortable) {
+    if (sortable && isOwner()) {
       moveHtml =
         '<button class="icon-btn move-btn" type="button" data-move-id="' + esc(node.id) + '" data-dir="-1" title="上移" aria-label="上移节点"' + (index === 0 ? ' disabled' : '') + '>' + icon('arrow-up') + '</button>' +
         '<button class="icon-btn move-btn" type="button" data-move-id="' + esc(node.id) + '" data-dir="1" title="下移" aria-label="下移节点"' + (index === total - 1 ? ' disabled' : '') + '>' + icon('arrow-down') + '</button>';
     }
 
     var checked = state.selected.has(node.id);
+    var rowClass = 'node-row' + (node.enabled ? '' : ' is-disabled') + (checked ? ' is-selected' : '') +
+      (shared ? ' is-shared' : '') + (personal ? ' is-personal' : '');
+    var rowAttrs = shared
+      ? ''
+      : ' tabindex="0" role="button" aria-label="编辑节点 ' + esc(node.name) + '"';
+    var statusHtml = shared
+      ? '<span class="shared-lock" title="共享节点由所有者维护" aria-label="共享节点由所有者维护">' + icon('shield') + '</span>'
+      : '<button class="switch" type="button" role="switch" data-toggle-id="' + esc(node.id) + '" aria-checked="' + (node.enabled ? 'true' : 'false') + '" aria-label="' + (node.enabled ? '停用节点' : '启用节点') + '"></button>';
+    var actionsHtml = shared
+      ? ''
+      : moveHtml +
+        '<button class="icon-btn" type="button" data-edit-id="' + esc(node.id) + '" title="编辑" aria-label="编辑节点">' + icon('pen') + '</button>' +
+        '<button class="icon-btn" type="button" data-menu-id="' + esc(node.id) + '" title="更多操作" aria-label="更多操作" aria-haspopup="menu" aria-expanded="false">' + icon('more') + '</button>';
 
-    return '<div class="node-row' + (node.enabled ? '' : ' is-disabled') + (checked ? ' is-selected' : '') + '" data-id="' + esc(node.id) + '" tabindex="0" role="button" aria-label="编辑节点 ' + esc(node.name) + '">' +
+    return '<div class="' + rowClass + '" data-id="' + esc(node.id) + '"' + rowAttrs + '>' +
       '<div class="cell cell-check"><input type="checkbox" class="check-input" data-pick-id="' + esc(node.id) + '" aria-label="选择节点 ' + esc(node.name) + '"' + (checked ? ' checked' : '') + '></div>' +
       '<div class="cell cell-node">' +
         '<span class="node-avatar avatar-' + esc(node.region) + '">' + region.flag + '</span>' +
@@ -1329,12 +1367,8 @@
       '</div>' +
       '<div class="cell cell-type"><span class="type-badge t-' + esc(node.type) + '"><span class="dot"></span>' + esc(type.label) + '</span></div>' +
       '<div class="cell cell-region"><span class="region-chip">' + region.flag + ' ' + esc(region.short) + '</span></div>' +
-      '<div class="cell cell-status"><button class="switch" type="button" role="switch" data-toggle-id="' + esc(node.id) + '" aria-checked="' + (node.enabled ? 'true' : 'false') + '" aria-label="' + (node.enabled ? '停用节点' : '启用节点') + '"></button></div>' +
-      '<div class="cell cell-actions">' +
-        moveHtml +
-        '<button class="icon-btn" type="button" data-edit-id="' + esc(node.id) + '" title="编辑" aria-label="编辑节点">' + icon('pen') + '</button>' +
-        '<button class="icon-btn" type="button" data-menu-id="' + esc(node.id) + '" title="更多操作" aria-label="更多操作" aria-haspopup="menu" aria-expanded="false">' + icon('more') + '</button>' +
-      '</div>' +
+      '<div class="cell cell-status">' + statusHtml + '</div>' +
+      '<div class="cell cell-actions">' + actionsHtml + '</div>' +
     '</div>';
   }
 
@@ -1347,7 +1381,40 @@
 
   function canWrite() {
     var meta = state.meta;
-    return !!(meta && meta.kv && !meta.readonly && meta.canWrite !== false && isOwner());
+    return !!(meta && meta.kv && !meta.readonly && meta.canWrite !== false);
+  }
+
+  function personalNodeIds() {
+    var ids = state.meta && state.meta.personalNodeIds;
+    return Array.isArray(ids) ? ids : [];
+  }
+
+  function isPersonalNode(node) {
+    if (!node) return false;
+    if (isOwner()) return true;
+    return personalNodeIds().indexOf(node.id) !== -1;
+  }
+
+  function isSharedNode(node) {
+    return !isOwner() && !!node && !isPersonalNode(node);
+  }
+
+  function editableNode(node) {
+    return !!node && canWrite() && (isOwner() || isPersonalNode(node));
+  }
+
+  function personalNodes() {
+    return nodes().filter(isPersonalNode);
+  }
+
+  function nodeLimit() {
+    if (isOwner()) return MAX_NODES;
+    var max = state.meta && Number(state.meta.maxPersonalNodes);
+    return Number.isFinite(max) && max > 0 ? max : MAX_PERSONAL_NODES;
+  }
+
+  function personalRoom() {
+    return Math.max(nodeLimit() - personalNodes().length, 0);
   }
 
   function clearSelection() {
@@ -1545,7 +1612,7 @@
 
   function openRowMenu(id, trigger) {
     var node = findNode(id);
-    if (!node || !el.rowMenu) return;
+    if (!node || !el.rowMenu || !editableNode(node)) return;
     closeRowMenu(true, false);
     state.menuNodeId = id;
     state.menuTrigger = trigger;
@@ -1584,7 +1651,7 @@
   }
 
   async function moveNode(id, dir, button) {
-    if (!ensureWritable() || state.mutating) return;
+    if (!isOwner() || !ensureWritable() || state.mutating) return;
     var view = viewNodes();
     var viewIndex = view.findIndex(function (node) { return node.id === id; });
     var viewTarget = viewIndex + dir;
@@ -1970,13 +2037,13 @@
   function renderAccount() {
     var meta = state.meta || {};
     var scope = meta.scope || {};
-    var count = nodes().length;
+    var personalCount = personalNodes().length;
+    var sharedCount = Math.max(nodes().length - personalCount, 0);
     if (el.accountUsername) el.accountUsername.value = meta.username || '';
     if (el.accountRole) el.accountRole.textContent = isOwner() ? '所有者' : '成员';
     if (el.accountScope) {
-      el.accountScope.value = scope.allNodes
-        ? '全部节点（' + count + ' 个）'
-        : count + ' 个可用节点';
+      el.accountScope.value = (scope.allNodes ? '全部共享节点' : '已分配共享节点') +
+        '（' + sharedCount + ' 个） · 个人节点（' + personalCount + ' 个）';
     }
     if (el.accountSubUrl) {
       el.accountSubUrl.value = meta.subUrl ? maskToken(meta.subUrl) : '';
@@ -2265,7 +2332,7 @@
       state.userFormMode = 'add';
       state.userFormId = null;
       el.userFormTitle.textContent = '添加账号';
-      el.userFormSub.textContent = '新账号默认是只读成员，可按需分配节点或设为所有者。';
+      el.userFormSub.textContent = '新账号默认是成员，只能使用分配的共享节点并添加个人节点；需要全部权限时可设为所有者。';
       el.userUsername.value = '';
       el.userUsername.disabled = false;
       el.userRole.value = 'member';
@@ -2458,10 +2525,6 @@
   function ensureWritable() {
     var meta = state.meta;
     if (!meta) return false;
-    if (!isOwner()) {
-      toast('成员账号为只读，节点与设置只能由所有者修改', 'info');
-      return false;
-    }
     if (!meta.kv || meta.readonly) {
       openModal('kv');
       toast('当前为只读模式，绑定 KV 存储后才能保存修改', 'info');
@@ -2481,12 +2544,22 @@
     if (opts.form) setSaveBusy(true);
 
     try {
-      var body = { rev: state.rev, nodes: nextNodes };
-      if (opts.defaults) body.defaults = opts.defaults;
-      if (opts.subscription) body.subscription = opts.subscription;
-      if (opts.regionOrder) body.regionOrder = opts.regionOrder;
-      if (opts.providerBase !== undefined) body.providerBase = opts.providerBase;
-      var data = await request('/api/config', {
+      var owner = isOwner();
+      // 成员只把个人节点发到 /api/nodes；新建节点尚未进入 meta.personalNodeIds，
+      // 但 id 已按 p_ 命名空间生成，同样需要带上
+      var payloadNodes = owner ? nextNodes : nextNodes.filter(function (node) {
+        return isPersonalNode(node) || /^p_/.test(node.id);
+      });
+      var body = owner
+        ? { rev: state.rev, nodes: payloadNodes }
+        : { rev: Number((state.meta && state.meta.personalRev) || 0), nodes: payloadNodes };
+      if (owner) {
+        if (opts.defaults) body.defaults = opts.defaults;
+        if (opts.subscription) body.subscription = opts.subscription;
+        if (opts.regionOrder) body.regionOrder = opts.regionOrder;
+        if (opts.providerBase !== undefined) body.providerBase = opts.providerBase;
+      }
+      var data = await request(owner ? '/api/config' : '/api/nodes', {
         method: 'PUT',
         body: body
       });
@@ -2556,7 +2629,7 @@
   async function toggleNode(id, button) {
     if (!ensureWritable() || state.mutating) return;
     var target = findNode(id);
-    if (!target) return;
+    if (!editableNode(target)) return;
     var nextEnabled = !target.enabled;
     setRowBusy(button, true);
     var nextNodes = nodes().map(function (node) {
@@ -2585,12 +2658,13 @@
   async function duplicateNode(id) {
     if (!ensureWritable() || state.mutating) return;
     var source = findNode(id);
-    if (!source) return;
-    if (nodes().length >= MAX_NODES) {
-      toast('节点数量已达到上限 ' + MAX_NODES + ' 个', 'error');
+    if (!editableNode(source)) return;
+    var limit = nodeLimit();
+    if (personalNodes().length >= limit) {
+      toast('节点数量已达到上限 ' + limit + ' 个', 'error');
       return;
     }
-    var copy = Object.assign({}, source, { id: randomId(), name: uniqueCopyName(source.name) });
+    var copy = Object.assign({}, source, { id: newNodeId(), name: uniqueCopyName(source.name) });
     var nextNodes = nodes().slice();
     var index = nextNodes.findIndex(function (node) { return node.id === id; });
     nextNodes.splice(index + 1, 0, copy);
@@ -2633,7 +2707,7 @@
   function askDelete(id) {
     if (!ensureWritable()) return;
     var target = findNode(id);
-    if (!target) return;
+    if (!editableNode(target)) return;
     state.deletingId = id;
     openConfirm({
       title: '删除这个节点？',
@@ -3272,7 +3346,7 @@
       if (errors.length > 6) html += '<p class="links-error-more">以及另外 ' + (errors.length - 6) + ' 条，请修正后重新粘贴。</p>';
     }
     if (overflow) {
-      html += '<p class="links-overflow">' + icon('alert') + '<span>节点数量将超过上限 ' + MAX_NODES + ' 个，请减少导入条数。</span></p>';
+      html += '<p class="links-overflow">' + icon('alert') + '<span>节点数量将超过上限 ' + nodeLimit() + ' 个，请减少导入条数。</span></p>';
     }
     el.linksFeedback.innerHTML = html;
     el.linksFeedback.hidden = false;
@@ -3282,7 +3356,7 @@
     if (!el.linksPreview) return;
     var items = state.linksParsed || [];
     var errors = state.linksErrors || [];
-    var room = MAX_NODES - nodes().length;
+    var room = personalRoom();
     var overflow = items.length > room;
 
     if (el.linksSummary) {
@@ -3388,7 +3462,7 @@
     if (!ensureWritable() || state.mutating) return;
     var items = state.linksParsed || [];
     if (!items.length) return;
-    var room = MAX_NODES - nodes().length;
+    var room = personalRoom();
     if (items.length > room) {
       toast('最多还能导入 ' + Math.max(room, 0) + ' 个节点', 'error');
       return;
@@ -3397,7 +3471,7 @@
     var additions = items.map(function (item) {
       var copy = Object.assign({}, item.node);
       if (override !== 'auto') copy.region = override;
-      copy.id = randomId();
+      copy.id = newNodeId();
       copy.enabled = true;
       copy.showInMain = true;
       copy.tags = [];
@@ -3522,6 +3596,10 @@
     var node = id ? findNode(id) : null;
     if (id && !node) {
       toast('节点不存在，请刷新后重试', 'error');
+      return;
+    }
+    if (id && !editableNode(node)) {
+      toast('共享节点由所有者维护；添加自己的节点后可以随时修改', 'info');
       return;
     }
 
@@ -3920,16 +3998,22 @@
 
     var nextNodes;
     if (state.editingId) {
+      if (!editableNode(findNode(state.editingId))) {
+        el.formGlobalError.textContent = '共享节点由所有者维护，不能在这里修改';
+        el.formGlobalError.hidden = false;
+        return;
+      }
       nextNodes = nodes().map(function (node) {
         return node.id === state.editingId ? Object.assign({}, result.node, { id: node.id }) : node;
       });
     } else {
-      if (nodes().length >= MAX_NODES) {
-        el.formGlobalError.textContent = '节点数量已达到上限 ' + MAX_NODES + ' 个';
+      var limit = nodeLimit();
+      if (personalNodes().length >= limit) {
+        el.formGlobalError.textContent = '节点数量已达到上限 ' + limit + ' 个';
         el.formGlobalError.hidden = false;
         return;
       }
-      nextNodes = nodes().concat([Object.assign({}, result.node, { id: randomId() })]);
+      nextNodes = nodes().concat([Object.assign({}, result.node, { id: newNodeId() })]);
     }
 
     await saveNodes(nextNodes, {

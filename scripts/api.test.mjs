@@ -79,6 +79,10 @@ function makeEnv(options = {}) {
         if (options.failWrite) throw new Error('kv write boom')
         data.set(key, String(value))
       },
+      async delete(key) {
+        if (options.failWrite) throw new Error('kv write boom')
+        data.delete(key)
+      },
     },
   }
   if (options.AUTH_TOKEN) env.AUTH_TOKEN = options.AUTH_TOKEN
@@ -532,7 +536,7 @@ group('角色与节点范围')
   const cfg = await getConfig(env, memberToken)
   eq('成员只看到授权节点', cfg.body.config.nodes.length, 2)
   check('成员配置里没有全局令牌', !JSON.stringify(cfg.body).includes(SUB_TOKEN))
-  eq('成员 meta 标记只读', cfg.body.meta.canWrite, false)
+  eq('成员可以写自己的节点', cfg.body.meta.canWrite, true)
   eq('成员 meta 角色', cfg.body.meta.role, 'member')
   check('成员订阅链接是独立令牌', cfg.body.meta.subUrl.includes('token=sub_'), cfg.body.meta.subUrl)
 
@@ -597,6 +601,105 @@ group('角色与节点范围')
   eq('最后一个所有者不能降级', demote.status, 400)
 }
 
+group('成员个人节点')
+{
+  const env = makeEnv()
+  const ownerToken = await initConsole(env)
+  await putConfig(env, ownerToken, { rev: 0, nodes: fullNodes(), authToken: SUB_TOKEN })
+
+  const users = (await call(env, '/api/users', { headers: bearer(ownerToken) })).body
+  await call(env, '/api/users', {
+    method: 'POST',
+    headers: { ...bearer(ownerToken), 'content-type': 'application/json' },
+    body: JSON.stringify({
+      rev: users.rev,
+      username: 'personal',
+      password: 'Personal-Pass-1',
+      role: 'member',
+      scope: { allNodes: false, nodeIds: ['n_hk1', 'n_hk2'] },
+    }),
+  })
+  const memberToken = (await login(env, 'personal', 'Personal-Pass-1')).body.token
+
+  const putPersonal = (token, payload) => call(env, '/api/nodes', {
+    method: 'PUT',
+    headers: { ...bearer(token), 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+
+  const first = await putPersonal(memberToken, {
+    rev: 0,
+    nodes: [{ ...ssNode(), id: 'p_mine1', name: 'MINE-01', server: 'mine.example.net' }],
+  })
+  eq('成员保存个人节点 200', first.status, 200)
+  eq('合并后包含共享与个人节点', first.body.config.nodes.length, 3)
+  eq('管理员配置 rev 不变', first.body.config.rev, 1)
+  eq('meta 返回个人节点 rev', first.body.meta.personalRev, 1)
+  eq('meta 标记个人节点', first.body.meta.personalNodeIds.join(','), 'p_mine1')
+  eq('meta 给出个人节点上限', first.body.meta.maxPersonalNodes, 100)
+
+  const adminCfg = await getConfig(env, ownerToken)
+  eq('管理员配置未被个人节点污染', adminCfg.body.config.nodes.length, fullNodes().length)
+  eq('管理员 rev 未被个人保存推进', adminCfg.body.config.rev, 1)
+  check('管理员配置看不到个人节点', !JSON.stringify(adminCfg.body.config).includes('MINE-01'))
+
+  const memberCfg = await getConfig(env, memberToken)
+  check('成员配置看到个人节点', memberCfg.body.config.nodes.some(node => node.name === 'MINE-01'))
+  const memberSub = new URL(memberCfg.body.meta.subUrl).searchParams.get('token')
+  const memberYaml = await call(env, '/?token=' + encodeURIComponent(memberSub))
+  check('成员订阅包含个人节点', memberYaml.body.includes('MINE-01'))
+  check('成员预览包含个人节点', (await call(env, '/api/preview', { headers: bearer(memberToken) })).body.includes('MINE-01'))
+  check('全局订阅不包含个人节点', !(await call(env, '/?token=' + SUB_TOKEN)).body.includes('MINE-01'))
+
+  const updated = await putPersonal(memberToken, {
+    rev: 1,
+    nodes: [{ ...ssNode(), id: 'p_mine1', name: 'MINE-02', server: 'mine.example.net' }],
+  })
+  eq('修改个人节点 200', updated.status, 200)
+  eq('个人节点 rev 自增', updated.body.meta.personalRev, 2)
+  check('修改后旧名称消失', !updated.body.config.nodes.some(node => node.name === 'MINE-01'))
+
+  const stale = await putPersonal(memberToken, { rev: 1, nodes: [] })
+  eq('过期个人 rev 409', stale.status, 409)
+  eq('409 带回最新个人 rev', stale.body.rev, 2)
+
+  const hijack = await putPersonal(memberToken, {
+    rev: 2,
+    nodes: [{ ...ssNode(), id: 'n_hk1', name: 'HIJACK-HK' }],
+  })
+  eq('提交共享节点 id 仍可保存为个人节点', hijack.status, 200)
+  const hijacked = hijack.body.config.nodes.find(node => node.name === 'HIJACK-HK')
+  check('共享节点 id 被重写为 p_', hijacked && hijacked.id.startsWith('p_') && hijacked.id !== 'n_hk1', hijacked && hijacked.id)
+  eq('原共享节点保持不变', hijack.body.config.nodes.find(node => node.id === 'n_hk1').name, 'HK-01')
+  eq('管理员节点仍为原数量', (await getConfig(env, ownerToken)).body.config.nodes.length, fullNodes().length)
+
+  const collide = await putPersonal(memberToken, {
+    rev: 3,
+    nodes: [{ ...ssNode(), id: 'p_dup', name: 'HK-01' }],
+  })
+  eq('与共享节点重名仍可保存', collide.status, 200)
+  check('重名个人节点自动加后缀', collide.body.config.nodes.some(node => node.name === 'HK-01 · 个人'))
+
+  const tooMany = Array.from({ length: 101 }, (_, i) => ({
+    ...ssNode(),
+    id: 'p_bulk_' + i,
+    name: 'BULK-' + i,
+  }))
+  eq('个人节点超过 100 个被拒', (await putPersonal(memberToken, { rev: 4, nodes: tooMany })).status, 400)
+  eq('所有者不能走个人节点接口', (await putPersonal(ownerToken, { rev: 0, nodes: [] })).status, 400)
+  eq('个人节点接口拒绝非 PUT', (await call(env, '/api/nodes', { headers: bearer(memberToken) })).status, 405)
+
+  const currentUsers = (await call(env, '/api/users', { headers: bearer(ownerToken) })).body
+  const memberId = currentUsers.users.find(user => user.username === 'personal').id
+  check('个人节点键已写入', env.data.has('user_nodes:' + memberId))
+  await call(env, '/api/users/delete', {
+    method: 'POST',
+    headers: { ...bearer(ownerToken), 'content-type': 'application/json' },
+    body: JSON.stringify({ rev: currentUsers.rev, id: memberId }),
+  })
+  check('删除账号时清理个人节点', !env.data.has('user_nodes:' + memberId))
+}
+
 group('旧账号库迁移')
 {
   const env = makeEnv()
@@ -620,7 +723,7 @@ group('旧账号库迁移')
   eq('旧成员默认保留全部节点', second.body.user.scope.allNodes, true)
   const cfg = await getConfig(env, second.body.token)
   eq('旧成员订阅不被收窄', cfg.body.config.nodes.length, fullNodes().length)
-  eq('旧成员默认只读', cfg.body.meta.canWrite, false)
+  eq('旧成员默认可管理个人节点', cfg.body.meta.canWrite, true)
   eq('旧成员不能管理账号', (await call(env, '/api/users', { headers: bearer(second.body.token) })).status, 403)
 }
 

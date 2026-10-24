@@ -10,6 +10,11 @@ const USERS_KEY = 'users'
 const MAX_NODES = 300
 const MAX_BODY = 256 * 1024
 const MAX_USERS = 20
+/* 成员个人节点单独存一个 KV 键：不进管理员配置、不影响其他账号，
+   只在该成员的配置、预览与订阅链接里合并展现 */
+const PERSONAL_KEY_PREFIX = 'user_nodes:'
+const MAX_PERSONAL_NODES = 100
+const PERSONAL_ID_RE = /^p_[A-Za-z0-9_-]{1,62}$/
 const USERNAME_RE = /^[A-Za-z0-9][A-Za-z0-9._+@-]{2,253}$/
 const USERNAME_MAX = 254
 const PASSWORD_MIN = 12
@@ -625,8 +630,13 @@ async function subscriptionAccess(env, token) {
     if (tokenEqual(token, candidate)) matched = user
   }
   if (!matched) return null
+  const base = filterConfigForPrincipal(config, { role: matched.role, scope: matched.scope })
+  if (matched.role === 'owner') return { config: base }
+  const personal = await readPersonalNodes(env, matched.id)
   return {
-    config: filterConfigForPrincipal(config, { role: matched.role, scope: matched.scope }),
+    config: personal.nodes.length
+      ? { ...base, nodes: mergePersonalNodes(base.nodes, personal.nodes) }
+      : base,
   }
 }
 
@@ -786,6 +796,127 @@ async function writeConfig(env, config) {
   } catch (err) {
     console.error('KV write failed:', err)
     throw new HttpError(502, '写入 KV 失败，请稍后重试')
+  }
+}
+
+function personalNodesKey(userId) {
+  return PERSONAL_KEY_PREFIX + userId
+}
+
+/* 读路径同样不信任 KV：逐条过一遍写入校验，坏数据只丢该条，
+   不会让某个成员的个人节点把整份订阅拖成 500。 */
+function normalizePersonalNodes(input) {
+  if (!Array.isArray(input)) return []
+  const ids = new Set()
+  const names = new Set()
+  const out = []
+  for (const raw of input.slice(0, MAX_PERSONAL_NODES)) {
+    if (!raw || typeof raw !== 'object') continue
+    if (typeof raw.id !== 'string' || !PERSONAL_ID_RE.test(raw.id) || ids.has(raw.id)) continue
+    const nameKey = typeof raw.name === 'string' ? raw.name.trim().toLowerCase() : ''
+    if (!nameKey || names.has(nameKey)) continue
+    let node
+    try {
+      node = validateNodes([{ ...raw, id: raw.id }])[0]
+    } catch (err) {
+      continue
+    }
+    ids.add(node.id)
+    names.add(nameKey)
+    out.push(node)
+  }
+  return out
+}
+
+async function readPersonalNodes(env, userId) {
+  const empty = { nodes: [], rev: 0, corrupted: false }
+  if (!userId) return empty
+  const kv = kvBinding(env)
+  if (!kv) return empty
+
+  let raw
+  try {
+    raw = await kv.get(personalNodesKey(userId))
+  } catch (err) {
+    console.error('Personal nodes read failed:', err)
+    return { ...empty, corrupted: true }
+  }
+  if (!raw) return empty
+
+  try {
+    const parsed = JSON.parse(raw)
+    if (!parsed || !Array.isArray(parsed.nodes)) throw new Error('invalid personal node store')
+    return {
+      nodes: normalizePersonalNodes(parsed.nodes),
+      rev: Number.isFinite(parsed.rev) ? parsed.rev : 1,
+      corrupted: false,
+    }
+  } catch (err) {
+    console.error('Personal nodes corrupted:', err)
+    return { ...empty, corrupted: true }
+  }
+}
+
+async function writePersonalNodes(env, userId, store) {
+  const kv = kvBinding(env)
+  if (!kv) throw new HttpError(503, '尚未绑定 KV 存储，无法保存')
+  try {
+    await kv.put(personalNodesKey(userId), JSON.stringify(store))
+  } catch (err) {
+    console.error('Personal nodes write failed:', err)
+    throw new HttpError(502, '写入 KV 失败，请稍后重试')
+  }
+}
+
+async function deletePersonalNodes(env, userId) {
+  const kv = kvBinding(env)
+  if (!kv || !userId || typeof kv.delete !== 'function') return
+  try {
+    await kv.delete(personalNodesKey(userId))
+  } catch (err) {
+    // 账号已经删掉，残留键不可再被任何会话读取；清理失败只记日志
+    console.warn('Personal nodes cleanup failed:', err)
+  }
+}
+
+/* 个人节点追加在管理员节点之后；名称冲突时加后缀而不是覆盖，
+   因为管理员可能事后新增了同名节点，这时不能让某个成员的订阅因重名而失效。 */
+function mergePersonalNodes(baseNodes, personalNodes) {
+  if (!personalNodes.length) return baseNodes
+  const ids = new Set(baseNodes.map(node => node.id))
+  const names = new Set(baseNodes.map(node => node.name.toLowerCase()))
+  const merged = []
+  for (const node of personalNodes) {
+    let id = node.id
+    while (ids.has(id)) id = 'p_' + crypto.randomUUID()
+    let name = node.name
+    if (names.has(name.toLowerCase())) {
+      const root = `${node.name} · 个人`.slice(0, 80)
+      name = root
+      let index = 2
+      while (names.has(name.toLowerCase())) {
+        const suffix = ` (${index})`
+        name = root.slice(0, 80 - suffix.length) + suffix
+        index += 1
+      }
+    }
+    ids.add(id)
+    names.add(name.toLowerCase())
+    merged.push(id === node.id && name === node.name ? node : { ...node, id, name })
+  }
+  return baseNodes.concat(merged)
+}
+
+/* 成员的可用节点 = 管理员分配的节点 + 自己的个人节点。
+   所有读路径（配置、预览、订阅）都走这里，避免三处行为漂移。 */
+async function configForPrincipal(env, config, principal) {
+  const filtered = filterConfigForPrincipal(config, principal)
+  if (!principal || isOwner(principal) || !principal.userId) return { config: filtered, personal: null }
+  const personal = await readPersonalNodes(env, principal.userId)
+  if (!personal.nodes.length) return { config: filtered, personal }
+  return {
+    config: { ...filtered, nodes: mergePersonalNodes(filtered.nodes, personal.nodes) },
+    personal,
   }
 }
 
@@ -1054,9 +1185,10 @@ async function handleApi(request, url, path, env) {
   if (path === '/api/config') {
     if (request.method === 'GET') {
       const result = await readConfig(env)
+      const view = await configForPrincipal(env, result.config, principal)
       return json({
-        config: publicConfig(filterConfigForPrincipal(result.config, principal)),
-        meta: await buildMeta(url, result, env, principal),
+        config: publicConfig(view.config),
+        meta: await buildMeta(url, result, env, principal, view.personal),
       })
     }
     if (request.method === 'PUT') {
@@ -1064,6 +1196,11 @@ async function handleApi(request, url, path, env) {
       return await apiSave(request, url, env, principal)
     }
     return json({ error: '不支持的请求方法' }, 405)
+  }
+
+  if (path === '/api/nodes') {
+    if (request.method !== 'PUT') return json({ error: '不支持的请求方法' }, 405)
+    return await apiSavePersonalNodes(request, url, env, principal)
   }
 
   if (path === '/api/password') {
@@ -1084,7 +1221,8 @@ async function handleApi(request, url, path, env) {
     } catch (err) {
       result = { config: emptyConfig(), readonly: true, corrupted: false }
     }
-    return new Response(buildYaml(filterConfigForPrincipal(result.config, principal)), {
+    const view = await configForPrincipal(env, result.config, principal)
+    return new Response(buildYaml(view.config), {
       headers: {
         ...baseHeaders(),
         'content-type': 'text/yaml;charset=UTF-8',
@@ -1372,6 +1510,7 @@ async function apiDeleteUser(request, env, principal) {
     updatedAt: new Date().toISOString(),
   }
   await writeUsersStore(env, next)
+  await deletePersonalNodes(env, id)
   return json(usersResponse(next, principal))
 }
 
@@ -1514,9 +1653,59 @@ async function apiSave(request, url, env, principal) {
   })
 }
 
+/* 成员的节点写路径：只接受个人节点，全部落到 user_nodes:<userId>，
+   管理员配置的 rev / updatedAt / nodes 都不会被触碰。
+   提交里混入的 n_ 节点 id 一律重写为 p_，因此无法借保存覆盖已分配节点。 */
+async function apiSavePersonalNodes(request, url, env, principal) {
+  if (isOwner(principal)) throw new HttpError(400, '所有者请通过配置接口保存节点')
+  if (!principal.userId) throw new HttpError(403, '当前会话不能保存个人节点')
+
+  const body = await readJsonBody(request)
+  if (!Array.isArray(body.nodes)) throw new HttpError(400, '节点数据格式不正确')
+  if (body.nodes.length > MAX_PERSONAL_NODES) {
+    throw new HttpError(400, `个人节点数量不能超过 ${MAX_PERSONAL_NODES} 个`)
+  }
+
+  const admin = await readConfig(env)
+  if (admin.readonly) throw new HttpError(503, '尚未绑定 KV 存储，无法保存')
+  const current = await readPersonalNodes(env, principal.userId)
+  if (body.rev !== undefined && body.rev !== null && Number(body.rev) !== current.rev) {
+    return json({ error: '个人节点已在其他窗口更新，请刷新后重试', rev: current.rev }, 409)
+  }
+
+  const nodes = validateNodes(body.nodes)
+  const adminIds = new Set(admin.config.nodes.map(node => node.id))
+  const usedIds = new Set()
+  const prepared = nodes.map(node => {
+    let id = PERSONAL_ID_RE.test(node.id) && !adminIds.has(node.id) && !usedIds.has(node.id)
+      ? node.id
+      : ''
+    if (!id) {
+      do { id = 'p_' + crypto.randomUUID() } while (adminIds.has(id) || usedIds.has(id))
+    }
+    usedIds.add(id)
+    return id === node.id ? node : { ...node, id }
+  })
+
+  const next = {
+    v: 1,
+    rev: (current.rev || 0) + 1,
+    updatedAt: new Date().toISOString(),
+    nodes: prepared,
+  }
+  await writePersonalNodes(env, principal.userId, next)
+
+  const filtered = filterConfigForPrincipal(admin.config, principal)
+  const merged = { ...filtered, nodes: mergePersonalNodes(filtered.nodes, prepared) }
+  return json({
+    config: publicConfig(merged),
+    meta: await buildMeta(url, admin, env, principal, { ...next, corrupted: false }),
+  })
+}
+
 /* 成员的 meta 只暴露自己的订阅链接：全局 AUTH_TOKEN 是「全部节点」凭据，
    不能因为成员登录就下发到他的浏览器里。 */
-async function buildMeta(url, result, env, principal) {
+async function buildMeta(url, result, env, principal, personal) {
   const stored = storedAuthToken(result.config)
   const envToken = authToken(env)
   const auth = stored || envToken
@@ -1524,6 +1713,7 @@ async function buildMeta(url, result, env, principal) {
   const role = owner ? 'owner' : 'member'
   const accountToken = !owner && principal ? principal.subscriptionToken : null
   const subToken = owner ? auth : accountToken
+  const personalNodes = personal && Array.isArray(personal.nodes) ? personal.nodes : []
   return {
     version: VERSION,
     kv: !!kvBinding(env),
@@ -1538,11 +1728,17 @@ async function buildMeta(url, result, env, principal) {
     username: principal ? principal.username : null,
     userId: principal && principal.userId ? principal.userId : null,
     role,
-    canWrite: owner && !!kvBinding(env) && !result.readonly,
+    // 成员也能写自己的节点，但只能落到 user_nodes:<id>，碰不到管理员配置
+    canWrite: !!kvBinding(env) && !result.readonly,
     canManageUsers: owner,
     scope: principal && principal.scope
       ? { allNodes: !!principal.scope.allNodes, nodeIds: principal.scope.nodeIds.slice() }
       : { allNodes: true, nodeIds: [] },
+    personalNodeIds: personalNodes.map(node => node.id),
+    personalRev: personal ? personal.rev : 0,
+    personalCount: personalNodes.length,
+    maxPersonalNodes: MAX_PERSONAL_NODES,
+    personalCorrupted: !!(personal && personal.corrupted),
   }
 }
 
