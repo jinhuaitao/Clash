@@ -1809,9 +1809,6 @@ kbd {
   .modal-actions .btn { flex: 1; }
   .alert .btn { margin-left: 0; width: 100%; }
   .step-no { width: 22px; height: 22px; }
-}
-
-@media (max-width: 500px) {
   .nav-item .nav-text { display: none; }
   .nav-item { width: 36px; padding: 0; justify-content: center; }
 }
@@ -2218,9 +2215,6 @@ mark.code-hit.is-current { background: #facc15; color: #1e293b; box-shadow: 0 0 
 
 /* ---------- 15. users ---------- */
 
-.users-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-.users-head > div { min-width: 0; }
-.users-head .btn { flex: none; margin-top: 2px; }
 .user-list { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--r-4); background: var(--panel-soft); overflow: hidden; }
 .user-row { display: flex; align-items: center; gap: 12px; padding: 11px 13px; border-top: 1px solid var(--line); }
 .user-row:first-child { border-top: 0; }
@@ -2342,8 +2336,6 @@ body.is-member .node-row { cursor: default; }
   .links-foot-actions { width: 100%; }
   .links-foot-actions .btn { flex: 1; }
   body.has-bulk .toast-stack { bottom: 128px; }
-  .users-head { flex-wrap: wrap; gap: 10px; }
-  .users-head .btn { width: auto; margin-left: auto; margin-top: 0; }
   .user-row { gap: 10px; padding: 10px 11px; }
   .user-main { flex: 1 1 auto; }
   .user-actions { width: auto; padding-left: 0; margin-left: auto; }

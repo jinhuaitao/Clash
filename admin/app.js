@@ -62,6 +62,7 @@
     overview: '概览',
     nodes: '节点管理',
     preview: '订阅预览',
+    users: '用户管理',
     settings: '设置'
   };
 
@@ -1151,7 +1152,7 @@
       : (meta.username ? (isOwner() ? '所有者 · ' : '成员 · ') + meta.username : '账号登录');
     if (el.overviewAuthNote) {
       el.overviewAuthNote.textContent = isOwner()
-        ? '登录使用账号密码，可在设置页添加或重置用户；订阅令牌只用于订阅链接。'
+        ? '登录使用账号密码，可在左侧「用户管理」添加或重置用户；订阅令牌只用于订阅链接。'
         : '成员账号为只读，可用节点与订阅链接由所有者分配。';
     }
     el.sysRev.textContent = '#' + state.rev;
@@ -1638,6 +1639,7 @@
 
   function switchView(view) {
     if (!VIEW_META[view]) view = 'overview';
+    if (view === 'users' && !isOwner()) view = 'overview';
     state.view = view;
     el.navItems.forEach(function (button) {
       var active = button.dataset.view === view;
@@ -1654,13 +1656,10 @@
     if (view === 'preview' && (!state.preview || state.previewDirty)) loadPreview();
     if (view === 'nodes') renderNodeList();
     if (view === 'overview') renderOverview();
+    if (view === 'users') loadUsers();
     if (view === 'settings') {
-      if (isOwner()) {
-        renderSettings();
-        loadUsers();
-      } else {
-        renderAccount();
-      }
+      if (isOwner()) renderSettings();
+      else renderAccount();
     }
     window.scrollTo(0, 0);
   }

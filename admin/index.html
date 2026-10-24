@@ -212,6 +212,9 @@
       <button class="nav-item" type="button" data-view="preview" aria-label="订阅预览">
         <svg class="icon"><use href="#i-code"></use></svg><span class="nav-text">订阅预览</span>
       </button>
+      <button class="nav-item" type="button" data-view="users" aria-label="用户管理" data-owner-only>
+        <svg class="icon"><use href="#i-user"></use></svg><span class="nav-text">用户管理</span>
+      </button>
       <button class="nav-item" type="button" data-view="settings" aria-label="设置">
         <svg class="icon"><use href="#i-sliders"></use></svg><span class="nav-text">设置</span>
       </button>
@@ -553,12 +556,80 @@
         </div>
       </section>
 
+      <section class="view" data-view-panel="users" hidden>
+        <div class="page-head">
+          <div>
+            <span class="eyebrow">Accounts</span>
+            <h1>用户管理</h1>
+            <p class="page-sub">所有者可添加账号并分配可用节点；成员只能查看分配给自己的节点并修改自己的密码。</p>
+          </div>
+          <div class="page-actions">
+            <button class="btn btn-primary" type="button" id="user-add">
+              <svg class="icon"><use href="#i-plus"></use></svg>添加用户
+            </button>
+          </div>
+        </div>
+
+        <section class="panel settings-panel users-panel" id="users-panel" data-owner-only>
+          <div class="user-list" id="user-list">
+            <div class="user-empty">正在载入账号…</div>
+          </div>
+          <form class="user-editor" id="user-form" hidden novalidate>
+            <div class="user-editor-head">
+              <b id="user-form-title">添加用户</b>
+              <span id="user-form-sub">创建后即可使用该账号登录控制台</span>
+            </div>
+            <div class="field">
+              <label for="user-username">用户名或邮箱</label>
+              <input id="user-username" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="254" placeholder="3–254 位用户名，或直接填写邮箱地址">
+              <div class="field-error" data-user-error="username"></div>
+            </div>
+            <div class="field">
+              <label for="user-role">账号角色</label>
+              <div class="select-wrap select-block">
+                <select id="user-role">
+                  <option value="member">成员 · 只读，只能使用分配的节点</option>
+                  <option value="owner">所有者 · 可管理账号与全部节点</option>
+                </select>
+                <svg class="icon"><use href="#i-chevron"></use></svg>
+              </div>
+              <div class="field-error" data-user-error="role"></div>
+            </div>
+            <div class="field" id="user-scope-field">
+              <label>可用节点</label>
+              <label class="scope-all"><input class="check-input" type="checkbox" id="user-scope-all"> <span>全部节点</span></label>
+              <div class="scope-list" id="user-scope-list"></div>
+              <div class="field-error" data-user-error="scope"></div>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label for="user-password">密码</label>
+                <input id="user-password" type="password" autocomplete="new-password" maxlength="128" placeholder="至少 12 位，请勿复用重要密码">
+                <div class="field-hint" id="user-password-hint" hidden>留空则不修改密码。</div>
+                <div class="field-error" data-user-error="password"></div>
+              </div>
+              <div class="field">
+                <label for="user-password2">确认密码</label>
+                <input id="user-password2" type="password" autocomplete="new-password" maxlength="128" placeholder="再次输入密码">
+              </div>
+            </div>
+            <div class="field-error" data-user-error="global"></div>
+            <div class="user-editor-actions">
+              <button class="btn btn-quiet" type="button" id="user-cancel">取消</button>
+              <button class="btn btn-primary" type="submit" id="user-save">
+                <span class="spinner" id="user-save-spinner" hidden></span><span class="btn-label" id="user-save-label">添加用户</span>
+              </button>
+            </div>
+          </form>
+        </section>
+      </section>
+
       <section class="view" data-view-panel="settings" hidden>
         <div class="page-head">
           <div>
             <span class="eyebrow">Settings</span>
             <h1>设置</h1>
-            <p class="page-sub">管理账号、订阅与节点参数；成员账号只能查看自己的节点与订阅。</p>
+            <p class="page-sub">管理订阅令牌、VLESS 预设与分流参数；成员账号只能查看自己的节点与订阅。</p>
           </div>
           <div class="page-head-meta"><span id="settings-updated">—</span></div>
         </div>
@@ -611,68 +682,6 @@
             <div class="account-actions">
               <button class="btn btn-primary" type="submit" id="pw-save">
                 <span class="spinner" id="pw-spinner" hidden></span><span class="btn-label" id="pw-save-label">更新密码</span>
-              </button>
-            </div>
-          </form>
-        </section>
-
-        <section class="panel settings-panel users-panel" id="users-panel" data-owner-only>
-          <div class="section-head users-head">
-            <div>
-              <h3>用户管理</h3>
-              <p>所有者可管理账号与节点；成员只能查看分配给自己的节点并修改自己的密码。</p>
-            </div>
-            <button class="btn btn-quiet btn-sm" type="button" id="user-add">
-              <svg class="icon"><use href="#i-plus"></use></svg>添加用户
-            </button>
-          </div>
-          <div class="user-list" id="user-list">
-            <div class="user-empty">正在载入账号…</div>
-          </div>
-          <form class="user-editor" id="user-form" hidden novalidate>
-            <div class="user-editor-head">
-              <b id="user-form-title">添加用户</b>
-              <span id="user-form-sub">创建后即可使用该账号登录控制台</span>
-            </div>
-            <div class="field">
-              <label for="user-username">用户名或邮箱</label>
-              <input id="user-username" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="254" placeholder="3–254 位用户名，或直接填写邮箱地址">
-              <div class="field-error" data-user-error="username"></div>
-            </div>
-            <div class="field">
-              <label for="user-role">账号角色</label>
-              <div class="select-wrap select-block">
-                <select id="user-role">
-                  <option value="member">成员 · 只读，只能使用分配的节点</option>
-                  <option value="owner">所有者 · 可管理账号与全部节点</option>
-                </select>
-                <svg class="icon"><use href="#i-chevron"></use></svg>
-              </div>
-              <div class="field-error" data-user-error="role"></div>
-            </div>
-            <div class="field" id="user-scope-field">
-              <label>可用节点</label>
-              <label class="scope-all"><input class="check-input" type="checkbox" id="user-scope-all"> <span>全部节点</span></label>
-              <div class="scope-list" id="user-scope-list"></div>
-              <div class="field-error" data-user-error="scope"></div>
-            </div>
-            <div class="field-row">
-              <div class="field">
-                <label for="user-password">密码</label>
-                <input id="user-password" type="password" autocomplete="new-password" maxlength="128" placeholder="至少 12 位，请勿复用重要密码">
-                <div class="field-hint" id="user-password-hint" hidden>留空则不修改密码。</div>
-                <div class="field-error" data-user-error="password"></div>
-              </div>
-              <div class="field">
-                <label for="user-password2">确认密码</label>
-                <input id="user-password2" type="password" autocomplete="new-password" maxlength="128" placeholder="再次输入密码">
-              </div>
-            </div>
-            <div class="field-error" data-user-error="global"></div>
-            <div class="user-editor-actions">
-              <button class="btn btn-quiet" type="button" id="user-cancel">取消</button>
-              <button class="btn btn-primary" type="submit" id="user-save">
-                <span class="spinner" id="user-save-spinner" hidden></span><span class="btn-label" id="user-save-label">添加用户</span>
               </button>
             </div>
           </form>
