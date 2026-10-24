@@ -2255,10 +2255,11 @@ mark.code-hit.is-current { background: #facc15; color: #1e293b; box-shadow: 0 0 
 .account-password .section-head { margin-bottom: 12px; }
 .account-actions { display: flex; justify-content: flex-end; }
 .account-panel .field-error:not(:empty) { display: block; margin-top: 6px; }
-body.is-member .cell-check,
 body.is-member .bulk-bar,
 body.is-member #user-add,
 body.is-member .user-actions { display: none !important; }
+/* 保留复选框列位，避免宽屏表格网格整体左移一列 */
+body.is-member .cell-check { visibility: hidden; }
 body.is-member .node-row.is-shared { cursor: default; }
 body.is-member .node-row.is-shared:hover { background: var(--panel); }
 .mini-badge.is-personal { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); background: color-mix(in srgb, var(--accent-soft) 60%, transparent); }
