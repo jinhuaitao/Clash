@@ -35,6 +35,10 @@ const [workerSource, staticHead, staticRules, adminTemplate, adminCss, adminJs, 
 if (/<\/script/i.test(adminJs)) {
   throw new Error('admin/app.js must not contain a literal closing script tag');
 }
+// CSS 会被内联进 <style>：出现闭合标签就相当于能跳出样式块注入标签
+if (/<\/style/i.test(adminCss)) {
+  throw new Error('admin/app.css must not contain a literal closing style tag');
+}
 
 try {
   new vm.Script(adminJs, { filename: 'admin/app.js' });

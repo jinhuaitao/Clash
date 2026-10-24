@@ -24,7 +24,7 @@
 | 设置 | 订阅令牌（页面只显示掩码，不回显明文）、VLESS 参数预设、流量与到期日、分流规则镜像源、浅色 / 深色 / 跟随系统、JSON 备份与恢复 |
 | 策略组 | 欧美 / 日韩 / 港台 / 中转自动分组，另挂 ChatGPT、Google、YouTube、Telegram 分流组 |
 | 伪装页 | 令牌不对时返回一个正常的「IP 地址查询」页：概览 / 连接 / 浏览器 / 工具四个标签页，含 IP 进制、CIDR、时间戳换算 |
-| 安全 | PBKDF2 口令哈希、HMAC 会话、CSP nonce、`noindex`、接口与订阅独立限流；TLS 证书校验默认开启，跳过校验需逐个节点显式勾选 |
+| 安全 | PBKDF2 口令哈希（随机盐、迭代次数可调）、HMAC 会话、CSP nonce、`noindex`、接口与订阅独立限流；TLS 证书校验默认开启，跳过校验需逐个节点显式勾选 |
 | 部署 | Wrangler 自动创建并复用 KV，全程不用手动绑定 |
 
 **协议**：VLESS（Reality / WebSocket / gRPC，可配 TLS、SNI、Flow、指纹）· Hysteria2（密码、SNI、跳过校验、上下行速率）· Trojan · VMess（WS / TCP / gRPC）· Shadowsocks（SIP002）。
@@ -58,7 +58,8 @@ Workers & Pages → **Create** → **Workers** → **Import a repository**，选
 | 名称 | 作用 | 必填 |
 | --- | --- | --- |
 | `ADMIN_TOKEN` | 初始化校验（`/api/setup` 需带 `Authorization: Bearer <ADMIN_TOKEN>`）+ 忘记密码时的恢复通道，不参与日常登录 | 否（公开部署建议配） |
-| `AUTH_TOKEN` | 订阅令牌；也可以只在设置页生成，无需环境变量 | 否 |
+| `AUTH_TOKEN` | 订阅令牌；也可以只在设置页生成，无需环境变量。少于 16 位或含空白 / 控制字符的值会被忽略 | 否 |
+| `PASSWORD_ITERATIONS` | PBKDF2 迭代次数，默认 `10000`（免费版 CPU 限制），付费计划可提到 `200000`；只影响新建 / 改密的账号 | 否 |
 
 ### 4. KV 自动创建
 
@@ -79,7 +80,7 @@ binding = "SUB_KV"
 
 ## 账号与令牌
 
-- **管理员账号**保存在 KV 的 `users` 键，与订阅配置分离；密码只存 PBKDF2-SHA256 哈希（随机盐、10 000 次迭代）。
+- **管理员账号**保存在 KV 的 `users` 键，与订阅配置分离；密码只存 PBKDF2-SHA256 哈希（随机盐、默认 10 000 次迭代，可用 `PASSWORD_ITERATIONS` 提高），最短 12 位。
 - **会话**为 HMAC 签名的 7 天令牌，存在 `sessionStorage`，关闭标签页即失效；重置密码会让该账号的旧会话立即作废。
 - **`ADMIN_TOKEN` ≠ `AUTH_TOKEN`**：前者是恢复通道，后者只能拉取订阅、不能登录控制台；两者都不要复用同一个值。
 - 订阅令牌保存在设置页时优先于环境变量，改完旧链接立即失效。`/api/config` 不再返回 `config.authToken` 明文，`meta.authTokenHint` 只给掩码（`•…•` + 末 4 位）与令牌来源，设置页输入框也不回显；完整令牌只出现在 `meta.subUrl`（订阅链接本身）这一处，界面上默认打码、点「显示令牌」才展开。需要换新令牌时点「生成」或粘贴完整令牌再保存，输入框留空即保持原值；掩码字符不会被当作合法令牌写入，误粘回输入框会在保存时被拒绝。
@@ -136,8 +137,8 @@ LICENSE / CHANGELOG.md 许可与变更记录
 
 | 方法 | 路径 | 鉴权 | 说明 |
 | --- | --- | --- | --- |
-| GET | `/?token=<AUTH_TOKEN>` | 查询令牌 | 订阅 YAML，带 `subscription-userinfo`；令牌错误或缺失返回伪装页 |
-| HEAD | `/?token=<AUTH_TOKEN>` | 查询令牌 | 只返回头部（含 `subscription-userinfo`），不生成 YAML 正文，适合客户端探活 |
+| GET | `/?token=<AUTH_TOKEN>` | 查询令牌或 `Authorization: Bearer` | 订阅 YAML，带 `subscription-userinfo`；令牌错误或缺失返回伪装页 |
+| HEAD | `/?token=<AUTH_TOKEN>` | 查询令牌或 `Authorization: Bearer` | 只返回头部（含 `subscription-userinfo`），不生成 YAML 正文，适合客户端探活 |
 | GET | `/admin`、`/console` | 页面内登录 | 控制台 |
 | GET | `/api/auth` | 公开 | `needsSetup` / `setupLocked` / `recovery` / `maxUsers` / `corrupted` |
 | POST | `/api/setup` | 公开（配了 `ADMIN_TOKEN` 时 `Bearer` 需带令牌） | 创建第一个管理员，已初始化或用户库损坏返回 `409` |
@@ -147,7 +148,7 @@ LICENSE / CHANGELOG.md 许可与变更记录
 | GET | `/api/preview` | `Bearer <会话>` | 当前配置渲染出的 YAML |
 | GET/POST | `/api/users`、`/api/users/update`、`/api/users/delete` | `Bearer <会话>` | 用户列表、新建、重置密码、删除 |
 
-`/api/*` 同时接受 `Bearer <ADMIN_TOKEN>` 作为恢复通道。限流：`/api/*` 每 IP 120 次/分钟，订阅与伪装页单独 240 次/分钟，登录失败按 IP + 用户名 10 分钟 8 次（按 isolate 尽力而为，需严格限流请在控制台加边缘 Rate Limiting 规则）。
+`/api/*` 同时接受 `Bearer <ADMIN_TOKEN>` 作为恢复通道。限流：`/api/*` 每 IP 120 次/分钟，订阅与伪装页单独 240 次/分钟，登录失败按 IP + 用户名 10 分钟 8 次，同一 IP 换用户名批量试探另有一道 10 分钟 60 次的总闸（按 isolate 尽力而为，需严格限流请在控制台加边缘 Rate Limiting 规则）。
 
 <details>
 <summary><b>KV 数据结构</b></summary>
@@ -191,11 +192,12 @@ LICENSE / CHANGELOG.md 许可与变更记录
 
 - 不要把 `dist/`、`.dev.vars`、导出的订阅 YAML 或备份 JSON 提交进仓库（`.gitignore` 已默认忽略，别用 `git add -f` 绕过）。
 - 如果曾公开过含节点的旧版本（例如单文件 `1.js`），**立即作废并更换**其中出现过的 UUID、Reality 公私钥与各协议密码。
-- 免费版 Worker CPU 受限，迭代次数低于桌面软件：用长密码，不要复用其他站点的密码。
+- 免费版 Worker CPU 受限，PBKDF2 默认 1 万次迭代：请用 12 位以上的长密码，不要复用其他站点的密码；付费计划可把 `PASSWORD_ITERATIONS` 提到 `200000`，显著提高 KV 泄漏后的离线破解成本。
+- 订阅令牌支持 `Authorization: Bearer` 头（客户端若支持请优先使用），这样令牌不会出现在 URL、CDN / Worker 日志与浏览器历史里；查询参数 `?token=` 只为兼容保留。
 - 订阅接口返回 `access-control-allow-origin: *` 以便各类客户端拉取，令牌即凭据，泄露后立刻更换。
 - TLS 证书校验默认开启。只有在自签证书且确认链路可信时才勾选「跳过证书校验」，否则等于把加密通道降级成明文可中间人。
 - 设置页与 `/api/config` 都不回显订阅令牌（`config.authToken` 已移除，界面上订阅链接默认打码），录屏、截图、贴设置响应时不会顺手泄漏凭据；备份 JSON 同样不含令牌，恢复后需重新设置。唯一含明文的是 `meta.subUrl`，它等价于订阅链接本身，不要转发或贴进公开渠道。
-- 控制台与伪装页都带 CSP（`script-src 'nonce-…'`、`object-src 'none'`、`worker-src 'none'`、`frame-ancestors 'none'`）、`X-Frame-Options: DENY`、`cross-origin-resource-policy: same-origin`、最小化的 `permissions-policy` 和 `noindex`，不进搜索引擎、不能被嵌套、也不给第三方页借用资源。
+- 控制台与伪装页都带 CSP（`script-src 'nonce-…'`、`object-src 'none'`、`worker-src 'none'`、`frame-ancestors 'none'`）、`X-Frame-Options: DENY`、`cross-origin-resource-policy: same-origin`、`cross-origin-opener-policy: same-origin`、`strict-transport-security`、最小化的 `permissions-policy` 和 `noindex`，不进搜索引擎、不能被嵌套、也不给第三方页借用资源。
 - KV 绑定异常或读写失败时接口返回 `502` 并带可读说明，订阅降级为空配置而不是让请求裸 500 掉进 Worker 错误页；`/api/auth` 的 `corrupted` 字段用来区分「没绑 KV」「未初始化」「数据损坏」三种状态。
 - 定期「导出备份」到本地：KV 数据只在云端，误删或账号异常时凭备份恢复。
 

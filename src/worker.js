@@ -11,10 +11,12 @@ const MAX_NODES = 300
 const MAX_BODY = 256 * 1024
 const MAX_USERS = 20
 const USERNAME_RE = /^[A-Za-z0-9][A-Za-z0-9._+@-]{2,253}$/
-const PASSWORD_MIN = 8
+const USERNAME_MAX = 254
+const PASSWORD_MIN = 12
 const PASSWORD_MAX = 128
-// Workers Free 只有 10ms CPU，PBKDF2 迭代次数需控制在较低水平
+// Workers Free 只有 10ms CPU，默认 1 万次；付费计划可用 PASSWORD_ITERATIONS 提高（上限 20 万）
 const PASSWORD_ITERATIONS = 10000
+const PASSWORD_ITERATIONS_MAX = 200000
 const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 
 const MAIN_GROUP = '🌍选择节点'
@@ -108,7 +110,7 @@ async function handleRequest(request, env) {
     if (path === '/admin' || path === '/console') {
       return serveAdmin(headOnly)
     }
-    const token = url.searchParams.get('token') || ''
+    const token = subscriptionToken(request, url)
     if (token) {
       const limited = checkSubRateLimit(request)
       if (limited) return limited
@@ -135,9 +137,22 @@ async function handleRequest(request, env) {
 /* auth                                                                */
 /* ------------------------------------------------------------------ */
 
+let warnedWeakAuthToken = false
 function authToken(env) {
   const value = env && env.AUTH_TOKEN
-  return typeof value === 'string' ? value : ''
+  if (typeof value !== 'string') return ''
+  const token = value.trim()
+  if (!token) return ''
+  // 环境变量可能被误粘入换行或超长内容：这类值既无法与 URL 中的令牌匹配，
+  // 也不该被当作有效凭据。过短的令牌等于可爆破，一并按「未配置」处理并提示一次。
+  if (token.length < AUTH_TOKEN_MIN || token.length > AUTH_TOKEN_MAX || /[\s\u0000-\u001f\u007f]/.test(token)) {
+    if (!warnedWeakAuthToken) {
+      warnedWeakAuthToken = true
+      console.warn(`AUTH_TOKEN 需为 ${AUTH_TOKEN_MIN}-${AUTH_TOKEN_MAX} 位且不含空白，当前值已忽略；请在设置页生成新令牌`)
+    }
+    return ''
+  }
+  return token
 }
 
 function dedicatedAdminToken(env) {
@@ -153,6 +168,16 @@ function bearerToken(request) {
   const header = request.headers.get('authorization') || ''
   if (/^bearer\s/i.test(header)) return header.slice(7).trim()
   return request.headers.get('x-admin-token') || ''
+}
+
+/* 订阅令牌优先取查询参数（客户端兼容），其次接受 Authorization: Bearer。
+   走头部时令牌不会进入 URL，也就不会被 CDN / Worker 日志与浏览器历史留存。 */
+function subscriptionToken(request, url) {
+  const query = url.searchParams.get('token') || ''
+  if (query) return query
+  const header = request.headers.get('authorization') || ''
+  if (/^bearer\s/i.test(header)) return header.slice(7).trim()
+  return ''
 }
 
 function tokenEqual(a, b) {
@@ -230,13 +255,22 @@ async function derivePasswordHash(password, salt, iterations) {
   return new Uint8Array(bits)
 }
 
-async function buildPasswordRecord(password) {
+/* 新建 / 改密时的迭代次数：默认 1 万次以适配免费计划，付费计划可通过环境变量提高。
+   已有账号按其存储值校验，改环境变量不会让旧口令失效。 */
+function passwordIterations(env) {
+  const raw = Number(env && env.PASSWORD_ITERATIONS)
+  if (!Number.isInteger(raw) || raw < PASSWORD_ITERATIONS) return PASSWORD_ITERATIONS
+  return Math.min(raw, PASSWORD_ITERATIONS_MAX)
+}
+
+async function buildPasswordRecord(password, iterations = PASSWORD_ITERATIONS) {
+  const rounds = Math.min(Math.max(iterations, PASSWORD_ITERATIONS), PASSWORD_ITERATIONS_MAX)
   const salt = randomBytes(16)
-  const hash = await derivePasswordHash(password, salt, PASSWORD_ITERATIONS)
+  const hash = await derivePasswordHash(password, salt, rounds)
   return {
     passwordSalt: bytesToBase64Url(salt),
     passwordHash: bytesToBase64Url(hash),
-    passwordIterations: PASSWORD_ITERATIONS,
+    passwordIterations: rounds,
   }
 }
 
@@ -244,7 +278,7 @@ async function verifyPassword(password, user) {
   if (!user || typeof user.passwordSalt !== 'string' || typeof user.passwordHash !== 'string') return false
   const iterations = Number.isFinite(user.passwordIterations) &&
     user.passwordIterations >= 1000 &&
-    user.passwordIterations <= 100000
+    user.passwordIterations <= PASSWORD_ITERATIONS_MAX
     ? user.passwordIterations
     : PASSWORD_ITERATIONS
   // 盐/哈希可能因 KV 被手工写坏而不是合法 base64：解码失败按密码不正确处理，不能 500
@@ -261,11 +295,13 @@ async function verifyPassword(password, user) {
   return bytesEqual(actual, expected)
 }
 
-async function dummyPasswordCheck(password) {
+/* 未知账号也要消耗同等量级的 CPU，否则响应时间会泄漏用户名是否存在 */
+async function dummyPasswordCheck(password, iterations = PASSWORD_ITERATIONS) {
+  const rounds = Math.min(Math.max(iterations, PASSWORD_ITERATIONS), PASSWORD_ITERATIONS_MAX)
   await derivePasswordHash(
     String(password || '').slice(0, PASSWORD_MAX),
     randomBytes(16),
-    PASSWORD_ITERATIONS
+    rounds
   )
   return false
 }
@@ -343,6 +379,10 @@ function normalizeStoredUser(raw) {
     throw new Error('invalid password encoding')
   }
   if (!Number.isFinite(raw.passwordIterations)) throw new Error('invalid password iterations')
+  // 与 verifyPassword 使用同一区间，避免读路径和校验路径对同一条记录得出不同结论
+  const iterations = raw.passwordIterations >= 1000 && raw.passwordIterations <= PASSWORD_ITERATIONS_MAX
+    ? raw.passwordIterations
+    : PASSWORD_ITERATIONS
   const version = Number.isFinite(raw.version) && raw.version > 0 ? raw.version : 1
   return {
     id: raw.id,
@@ -350,7 +390,7 @@ function normalizeStoredUser(raw) {
     usernameKey: raw.username.toLowerCase(),
     passwordSalt: raw.passwordSalt,
     passwordHash: raw.passwordHash,
-    passwordIterations: raw.passwordIterations,
+    passwordIterations: iterations,
     version,
     createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : new Date().toISOString(),
   }
@@ -469,6 +509,8 @@ async function authenticateRequest(request, env) {
 }
 
 async function subscriptionAccess(env, token) {
+  // 长度先兜底：超长令牌必然无效，没必要为它读一次 KV（未鉴权请求的可控成本）
+  if (typeof token !== 'string' || !token || token.length > AUTH_TOKEN_MAX) return null
   const config = (await readConfig(env)).config
   const expected = effectiveAuthToken(config, env)
   if (!expected || !tokenEqual(token, expected)) return null
@@ -984,7 +1026,7 @@ async function apiSetup(request, env) {
     }
   }
 
-  const record = await buildPasswordRecord(password)
+  const record = await buildPasswordRecord(password, passwordIterations(env))
   const user = {
     id: newUserId(),
     username,
@@ -1022,7 +1064,8 @@ async function apiSetup(request, env) {
 
 async function apiLogin(request, env) {
   const body = await readJsonBody(request)
-  const username = typeof body.username === 'string' ? body.username.trim() : ''
+  // 先截断再进限流桶：否则超长用户名会按「每次不同」生成桶键，撑爆 isolate 内存
+  const username = typeof body.username === 'string' ? body.username.trim().slice(0, USERNAME_MAX) : ''
   const password = typeof body.password === 'string' ? body.password : ''
 
   const limited = checkLoginRateLimit(request, username)
@@ -1044,7 +1087,12 @@ async function apiLogin(request, env) {
   if (user && password.length <= PASSWORD_MAX) {
     ok = await verifyPassword(password, user)
   } else {
-    await dummyPasswordCheck(password)
+    // 未知账号按库内最高迭代次数空转，避免响应时间暴露账号是否存在
+    const rounds = store.users.reduce(
+      (max, item) => Math.max(max, item.passwordIterations || PASSWORD_ITERATIONS),
+      PASSWORD_ITERATIONS
+    )
+    await dummyPasswordCheck(password, rounds)
   }
 
   if (!ok) {
@@ -1093,7 +1141,7 @@ async function apiCreateUser(request, env, principal) {
     return json({ error: '该用户名已存在', field: 'username' }, 400)
   }
 
-  const record = await buildPasswordRecord(password)
+  const record = await buildPasswordRecord(password, passwordIterations(env))
   const user = {
     id: newUserId(),
     username,
@@ -1114,7 +1162,7 @@ async function apiCreateUser(request, env, principal) {
 
 async function apiUpdateUser(request, env, principal) {
   const body = await readJsonBody(request)
-  const id = typeof body.id === 'string' ? body.id : ''
+  const id = typeof body.id === 'string' ? body.id.slice(0, 64) : ''
   const password = validatePassword(body.password)
 
   const usersResult = await readUsersStore(env)
@@ -1126,7 +1174,7 @@ async function apiUpdateUser(request, env, principal) {
   const target = store.users.find(item => item.id === id)
   if (!target) return json({ error: '用户不存在或已被删除' }, 404)
 
-  const record = await buildPasswordRecord(password)
+  const record = await buildPasswordRecord(password, passwordIterations(env))
   const updated = { ...target, ...record, version: target.version + 1 }
   const next = {
     ...store,
@@ -1145,7 +1193,7 @@ async function apiUpdateUser(request, env, principal) {
 
 async function apiDeleteUser(request, env, principal) {
   const body = await readJsonBody(request)
-  const id = typeof body.id === 'string' ? body.id : ''
+  const id = typeof body.id === 'string' ? body.id.slice(0, 64) : ''
 
   const usersResult = await readUsersStore(env)
   if (!usersResult.store) return usersStoreError(usersResult)
@@ -1199,6 +1247,8 @@ function publicConfig(config) {
 function maskedAuthToken(config, env) {
   const token = storedAuthToken(config) || authToken(env)
   if (!token) return null
+  // 过短的令牌不显示末位：4 位尾码在 9 位以下的令牌里已经是可用信息的主要部分
+  if (token.length < AUTH_TOKEN_MIN) return '•'.repeat(8)
   const tail = token.slice(-4)
   return '•'.repeat(Math.max(6, Math.min(token.length - 4, 24))) + tail
 }
@@ -1310,36 +1360,55 @@ const apiRateBuckets = new Map()
 
 const LOGIN_RATE_WINDOW_MS = 10 * 60 * 1000
 const LOGIN_RATE_MAX = 8
+/* 同一 IP 针对「任意用户名」的失败总闸：挡住换用户名批量试密码（password spraying） */
+const LOGIN_IP_RATE_MAX = 60
+const LOGIN_IP_BUCKET = '__ip__'
 const loginFailureBuckets = new Map()
 
+function clientIp(request) {
+  return request.headers.get('cf-connecting-ip') || 'unknown'
+}
+
 function loginBucketKey(request, username) {
-  const ip = request.headers.get('cf-connecting-ip') || 'unknown'
-  return ip + '|' + String(username || '').toLowerCase()
+  return clientIp(request) + '|' + String(username || '').toLowerCase()
+}
+
+function loginIpBucketKey(request) {
+  return clientIp(request) + '|' + LOGIN_IP_BUCKET
+}
+
+function loginBucketLimited(key, max, now) {
+  const bucket = loginFailureBuckets.get(key)
+  if (!bucket) return 0
+  if (now - bucket.start >= LOGIN_RATE_WINDOW_MS) {
+    loginFailureBuckets.delete(key)
+    return 0
+  }
+  if (bucket.fails < max) return 0
+  return Math.max(1, Math.ceil((LOGIN_RATE_WINDOW_MS - (now - bucket.start)) / 1000))
 }
 
 function checkLoginRateLimit(request, username) {
-  const key = loginBucketKey(request, username)
-  const bucket = loginFailureBuckets.get(key)
-  if (!bucket) return null
   const now = Date.now()
-  if (now - bucket.start >= LOGIN_RATE_WINDOW_MS) {
-    loginFailureBuckets.delete(key)
-    return null
-  }
-  if (bucket.fails < LOGIN_RATE_MAX) return null
-  const retryAfter = Math.max(1, Math.ceil((LOGIN_RATE_WINDOW_MS - (now - bucket.start)) / 1000))
+  const retryAfter = loginBucketLimited(loginBucketKey(request, username), LOGIN_RATE_MAX, now) ||
+    loginBucketLimited(loginIpBucketKey(request), LOGIN_IP_RATE_MAX, now)
+  if (!retryAfter) return null
   return json({ error: '尝试次数过多，请稍后再试' }, 429, { 'retry-after': String(retryAfter) })
 }
 
-function recordLoginFailure(request, username) {
-  const key = loginBucketKey(request, username)
-  const now = Date.now()
+function bumpLoginBucket(key, now) {
   let bucket = loginFailureBuckets.get(key)
   if (!bucket || now - bucket.start >= LOGIN_RATE_WINDOW_MS) {
     bucket = { start: now, fails: 0 }
     loginFailureBuckets.set(key, bucket)
   }
   bucket.fails += 1
+}
+
+function recordLoginFailure(request, username) {
+  const now = Date.now()
+  bumpLoginBucket(loginBucketKey(request, username), now)
+  bumpLoginBucket(loginIpBucketKey(request), now)
   if (loginFailureBuckets.size > 2000) {
     for (const [item, value] of loginFailureBuckets) {
       if (now - value.start >= LOGIN_RATE_WINDOW_MS) loginFailureBuckets.delete(item)
@@ -1348,6 +1417,7 @@ function recordLoginFailure(request, username) {
   }
 }
 
+/* 只清除该账号的失败计数：按 IP 的总闸不因某次成功而放行，否则批量试探可被一次正确登录洗白 */
 function clearLoginFailures(request, username) {
   loginFailureBuckets.delete(loginBucketKey(request, username))
 }
@@ -1389,6 +1459,7 @@ function baseHeaders() {
     'x-content-type-options': 'nosniff',
     'referrer-policy': 'no-referrer',
     'x-frame-options': 'DENY',
+    'strict-transport-security': 'max-age=15552000',
   }
 }
 
@@ -1397,6 +1468,7 @@ function htmlHeaders() {
   return {
     ...baseHeaders(),
     'cross-origin-resource-policy': 'same-origin',
+    'cross-origin-opener-policy': 'same-origin',
     'permissions-policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), magnetometer=(), gyroscope=(), accelerometer=()',
   }
 }
@@ -1742,6 +1814,11 @@ function randomNonce() {
 /* decoy page                                                          */
 /* ------------------------------------------------------------------ */
 
+function decoyCsp(nonce) {
+  // default-src 'none' 已覆盖 object / worker / connect，这里只显式列出可能被放宽的指令
+  return "default-src 'none'; script-src 'nonce-" + nonce + "'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+}
+
 function renderDecoy(request, headOnly = false) {
   const headers = request.headers
   const nonce = randomNonce()
@@ -1754,6 +1831,8 @@ function renderDecoy(request, headOnly = false) {
         'content-type': 'text/html;charset=UTF-8',
         'cache-control': 'no-store',
         'x-robots-tag': 'noindex, nofollow',
+        // HEAD 不返回正文，但头部仍与 GET 保持一致，避免探测差异
+        'content-security-policy': decoyCsp(nonce),
       },
     })
   }
@@ -2559,8 +2638,7 @@ function renderDecoy(request, headOnly = false) {
       'content-type': 'text/html;charset=UTF-8',
       'cache-control': 'no-store',
       'x-robots-tag': 'noindex, nofollow',
-      // default-src 'none' 已覆盖 object / worker / connect，这里只显式列出可能被放宽的指令
-      'content-security-policy': "default-src 'none'; script-src 'nonce-" + nonce + "'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      'content-security-policy': decoyCsp(nonce),
     },
   })
 }

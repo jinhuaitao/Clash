@@ -9,6 +9,7 @@
   var MAX_TOTAL_GB = 1048576;
   var THEME_MODES = ['system', 'light', 'dark'];
   var MAX_USERS = 20;
+  var PASSWORD_MIN = 12;
   var USERNAME_RE = /^[A-Za-z0-9][A-Za-z0-9._+@-]{2,253}$/;
   var FINGERPRINTS = ['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', 'random', 'randomized'];
   var SS_CIPHERS = ['aes-128-gcm', 'aes-256-gcm', 'chacha20-ietf-poly1305', 'xchacha20-ietf-poly1305'];
@@ -745,8 +746,8 @@
       return;
     }
     if (setup) {
-      if (password.length < 8) {
-        showLoginError('密码至少需要 8 个字符。');
+      if (password.length < PASSWORD_MIN) {
+        showLoginError('密码至少需要 ' + PASSWORD_MIN + ' 个字符。');
         el.loginPassword.focus();
         return;
       }
@@ -2085,8 +2086,8 @@
     }
     if (!password) {
       errors.push({ key: 'password', message: '请输入密码' });
-    } else if (password.length < 8) {
-      errors.push({ key: 'password', message: '密码至少需要 8 个字符' });
+    } else if (password.length < PASSWORD_MIN) {
+      errors.push({ key: 'password', message: '密码至少需要 ' + PASSWORD_MIN + ' 个字符' });
     } else if (password.length > 128) {
       errors.push({ key: 'password', message: '密码不能超过 128 个字符' });
     } else if (password !== confirm) {

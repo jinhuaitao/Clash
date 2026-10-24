@@ -529,6 +529,57 @@ group('限流')
   eq('限流按 IP 隔离', (await call(env, '/api/auth', { ip: otherIp })).status, 200)
 }
 
+group('安全加固')
+{
+  const env = makeEnv()
+  const token = await initConsole(env)
+  await putConfig(env, token, { rev: 0, nodes: [ssNode({ id: 'a', name: 'A-01' })], authToken: SUB_TOKEN })
+
+  const decoy = await call(env, '/')
+  eq('伪装页带 HSTS', decoy.headers.get('strict-transport-security'), 'max-age=15552000')
+  eq('伪装页带 COOP', decoy.headers.get('cross-origin-opener-policy'), 'same-origin')
+  const head = await call(env, '/', { method: 'HEAD' })
+  check('HEAD 伪装页也带 CSP', /script-src 'nonce-[0-9a-f]{32}'/.test(String(head.headers.get('content-security-policy'))))
+
+  const byHeader = await call(env, '/', { headers: bearer(SUB_TOKEN) })
+  eq('Authorization 头可拉订阅', byHeader.status, 200)
+  check('Authorization 头返回 YAML', byHeader.contentType.includes('yaml') && byHeader.body.includes('proxies:'), byHeader.contentType)
+  eq('Authorization 头 HEAD 探活', (await call(env, '/', { method: 'HEAD', headers: bearer(SUB_TOKEN) })).status, 200)
+
+  let kvReads = 0
+  const originalGet = env.SUB_KV.get
+  env.SUB_KV.get = async key => { kvReads += 1; return originalGet(key) }
+  const overlong = await call(env, '/?token=' + 'x'.repeat(600))
+  check('超长令牌返回伪装页', overlong.contentType.startsWith('text/html'))
+  eq('超长令牌不触发 KV 读取', kvReads, 0)
+  env.SUB_KV.get = originalGet
+
+  const hugeName = await call(env, '/api/login', {
+    method: 'POST',
+    body: JSON.stringify({ username: 'a'.repeat(60000), password: 'x' }),
+  })
+  eq('超长用户名按登录失败处理而非崩溃', hugeName.status, 401)
+
+  let seq = 0
+  const create = password => call(env, '/api/users', {
+    method: 'POST',
+    headers: { ...bearer(token), 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'guard' + (++seq), password }),
+  })
+  eq('11 位口令被拒', (await create('x'.repeat(11))).status, 400)
+  eq('12 位口令通过', (await create('x'.repeat(12))).status, 200)
+
+  const weak = makeEnv({ AUTH_TOKEN: 'short-token' })
+  check('过短的 AUTH_TOKEN 被忽略', (await call(weak, '/?token=short-token')).contentType.startsWith('text/html'))
+
+  const strong = makeEnv()
+  strong.PASSWORD_ITERATIONS = 20000
+  await asAdmin(strong)
+  const stored = JSON.parse(strong.data.get('users'))
+  eq('PASSWORD_ITERATIONS 写入新账号', stored.users[0].passwordIterations, 20000)
+  eq('提高迭代后仍能登录', (await login(strong)).status, 200)
+}
+
 /* ================= 收尾 ================= */
 
 console.error = realError
