@@ -1,0 +1,75 @@
+# Transit Hub · CI
+#
+# 目标：每次 push / PR 都自动把「静态检查 → 检查器自测 → 接口回归 → 构建 → 产物校验」跑一遍，
+#      让回归在合并前就红，而不是部署后才发现。
+#
+# 特点：零依赖，不需要 npm install（仓库 devDependencies 只有 wrangler，测试与检查都是纯 Node）。
+# 放置路径：<仓库根>/.github/workflows/ci.yml
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: 静态检查 · 接口测试 · 构建
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 环境信息
+        run: node --version && npm --version
+
+      - name: 静态检查（严格模式，有 error 级问题即失败）
+        run: node scripts/check.mjs --strict
+
+      - name: 检查器自测（确认检查器本身没坏）
+        run: node scripts/check.mjs --selftest
+
+      - name: 接口回归测试
+        run: node scripts/api.test.mjs
+
+      - name: 构建 dist/1.js
+        run: node build.mjs
+
+      - name: 校验产物（语法 + 体积）
+        run: |
+          node --check dist/1.js
+          node -e '
+            const fs = require("fs");
+            const zlib = require("zlib");
+            const raw = fs.readFileSync("dist/1.js");
+            const size = raw.length;
+            const gz = zlib.gzipSync(raw).length;
+            console.log("dist/1.js  " + (size / 1024).toFixed(1) + " KB  ·  gzip " + (gz / 1024).toFixed(1) + " KB");
+            const LIMIT = 1024 * 1024; // Workers 免费版：压缩后 1 MB 脚本上限
+            if (gz > LIMIT) {
+              console.error("体积超限：gzip " + (gz / 1024 / 1024).toFixed(2) + " MB > 1 MB，部署会被拒");
+              process.exit(1);
+            }
+          '
+
+      - name: 必备文件检查
+        run: |
+          test -f README.md || { echo "缺少 README.md"; exit 1; }
+          test -f LICENSE   || { echo "缺少 LICENSE"; exit 1; }
+          test -f wrangler.toml || { echo "缺少 wrangler.toml"; exit 1; }
