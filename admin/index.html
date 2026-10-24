@@ -396,7 +396,7 @@
               <li><span class="kv-key"><svg class="icon"><use href="#i-layers"></use></svg>配置版本</span><span class="kv-val mono" id="sys-rev">—</span></li>
               <li><span class="kv-key"><svg class="icon"><use href="#i-refresh"></use></svg>最后更新</span><span class="kv-val" id="sys-updated">—</span></li>
             </ul>
-            <p class="panel-note">登录使用账号密码，可在设置页添加或重置用户；订阅令牌只用于订阅链接。</p>
+            <p class="panel-note" id="overview-auth-note">登录使用账号密码，可在设置页添加或重置用户；订阅令牌只用于订阅链接。</p>
           </section>
         </div>
 
@@ -558,16 +558,69 @@
           <div>
             <span class="eyebrow">Settings</span>
             <h1>设置</h1>
-            <p class="page-sub">管理登录账号、订阅令牌、VLESS 参数与界面外观。</p>
+            <p class="page-sub">管理账号、订阅与节点参数；成员账号只能查看自己的节点与订阅。</p>
           </div>
           <div class="page-head-meta"><span id="settings-updated">—</span></div>
         </div>
 
-        <section class="panel settings-panel users-panel" id="users-panel">
+        <section class="panel settings-panel account-panel" id="account-panel" data-member-only hidden>
+          <div class="section-head">
+            <div>
+              <h3>我的账号</h3>
+              <p>成员账号为只读：可查看分配给自己的节点、复制订阅链接并修改密码。</p>
+            </div>
+            <span class="role-badge" id="account-role">成员</span>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label for="account-username">登录账号</label>
+              <input id="account-username" readonly>
+            </div>
+            <div class="field">
+              <label for="account-scope">可用节点</label>
+              <input id="account-scope" readonly>
+            </div>
+          </div>
+          <div class="field">
+            <label for="account-sub-url">我的订阅链接</label>
+            <div class="input-inline">
+              <input id="account-sub-url" class="token-input" readonly spellcheck="false">
+              <button class="btn btn-quiet btn-sm" type="button" id="account-sub-copy">复制</button>
+            </div>
+            <div class="field-hint">链接只包含分配给你的节点；修改密码后旧链接立即失效，这里会自动更新。为避免明文外泄，链接默认掩码显示，点「复制」获取完整地址。</div>
+          </div>
+          <form class="account-password" id="password-form" novalidate>
+            <div class="section-head"><h3>修改密码</h3><p>修改成功后，其他设备上的登录与旧订阅链接会立即失效。</p></div>
+            <div class="field">
+              <label for="pw-current">当前密码</label>
+              <input id="pw-current" type="password" autocomplete="current-password" maxlength="128">
+              <div class="field-error" data-error="currentPassword"></div>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label for="pw-new">新密码</label>
+                <input id="pw-new" type="password" autocomplete="new-password" maxlength="128" placeholder="至少 12 位，请勿复用重要密码">
+                <div class="field-error" data-error="newPassword"></div>
+              </div>
+              <div class="field">
+                <label for="pw-confirm">确认新密码</label>
+                <input id="pw-confirm" type="password" autocomplete="new-password" maxlength="128" placeholder="再次输入新密码">
+              </div>
+            </div>
+            <div class="field-error" data-error="global"></div>
+            <div class="account-actions">
+              <button class="btn btn-primary" type="submit" id="pw-save">
+                <span class="spinner" id="pw-spinner" hidden></span><span class="btn-label" id="pw-save-label">更新密码</span>
+              </button>
+            </div>
+          </form>
+        </section>
+
+        <section class="panel settings-panel users-panel" id="users-panel" data-owner-only>
           <div class="section-head users-head">
             <div>
               <h3>用户管理</h3>
-              <p>账号用于登录控制台，所有账号拥有相同的管理权限。</p>
+              <p>所有者可管理账号与节点；成员只能查看分配给自己的节点并修改自己的密码。</p>
             </div>
             <button class="btn btn-quiet btn-sm" type="button" id="user-add">
               <svg class="icon"><use href="#i-plus"></use></svg>添加用户
@@ -586,10 +639,28 @@
               <input id="user-username" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="254" placeholder="3–254 位用户名，或直接填写邮箱地址">
               <div class="field-error" data-user-error="username"></div>
             </div>
+            <div class="field">
+              <label for="user-role">账号角色</label>
+              <div class="select-wrap select-block">
+                <select id="user-role">
+                  <option value="member">成员 · 只读，只能使用分配的节点</option>
+                  <option value="owner">所有者 · 可管理账号与全部节点</option>
+                </select>
+                <svg class="icon"><use href="#i-chevron"></use></svg>
+              </div>
+              <div class="field-error" data-user-error="role"></div>
+            </div>
+            <div class="field" id="user-scope-field">
+              <label>可用节点</label>
+              <label class="scope-all"><input class="check-input" type="checkbox" id="user-scope-all"> <span>全部节点</span></label>
+              <div class="scope-list" id="user-scope-list"></div>
+              <div class="field-error" data-user-error="scope"></div>
+            </div>
             <div class="field-row">
               <div class="field">
                 <label for="user-password">密码</label>
                 <input id="user-password" type="password" autocomplete="new-password" maxlength="128" placeholder="至少 12 位，请勿复用重要密码">
+                <div class="field-hint" id="user-password-hint" hidden>留空则不修改密码。</div>
                 <div class="field-error" data-user-error="password"></div>
               </div>
               <div class="field">
@@ -607,7 +678,7 @@
           </form>
         </section>
 
-        <form id="settings-form" novalidate>
+        <form id="settings-form" novalidate data-owner-only>
           <section class="panel settings-panel">
             <div class="section-head"><h3>访问令牌</h3><p>订阅链接使用此令牌鉴权，仅用于订阅访问，不能登录控制台。保存后立即生效，无需环境变量 AUTH_TOKEN。</p></div>
             <div class="field">

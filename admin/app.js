@@ -80,6 +80,7 @@
     userFormId: null,
     userDeletingId: null,
     userBusy: false,
+    passwordBusy: false,
     view: 'overview',
     query: '',
     filterType: 'all',
@@ -326,6 +327,7 @@
     el.recentNodes = $('#recent-nodes');
     el.sysKv = $('#sys-kv');
     el.sysAuth = $('#sys-auth');
+    el.overviewAuthNote = $('#overview-auth-note');
     el.sysRev = $('#sys-rev');
     el.sysUpdated = $('#sys-updated');
     el.sysHealth = $('#sys-health');
@@ -414,12 +416,30 @@
     el.userFormTitle = $('#user-form-title');
     el.userFormSub = $('#user-form-sub');
     el.userUsername = $('#user-username');
+    el.userRole = $('#user-role');
+    el.userScopeField = $('#user-scope-field');
+    el.userScopeAll = $('#user-scope-all');
+    el.userScopeList = $('#user-scope-list');
     el.userPassword = $('#user-password');
     el.userPassword2 = $('#user-password2');
+    el.userPasswordHint = $('#user-password-hint');
     el.userCancel = $('#user-cancel');
     el.userSave = $('#user-save');
     el.userSaveLabel = $('#user-save-label');
     el.userSaveSpinner = $('#user-save-spinner');
+    el.accountPanel = $('#account-panel');
+    el.accountRole = $('#account-role');
+    el.accountUsername = $('#account-username');
+    el.accountScope = $('#account-scope');
+    el.accountSubUrl = $('#account-sub-url');
+    el.accountSubCopy = $('#account-sub-copy');
+    el.passwordForm = $('#password-form');
+    el.pwCurrent = $('#pw-current');
+    el.pwNew = $('#pw-new');
+    el.pwConfirm = $('#pw-confirm');
+    el.pwSave = $('#pw-save');
+    el.pwSaveLabel = $('#pw-save-label');
+    el.pwSpinner = $('#pw-spinner');
     el.setAuthToken = $('#set-auth-token');
     el.authTokenNote = $('#auth-token-note');
     el.genAuthToken = $('#gen-auth-token');
@@ -672,7 +692,7 @@
     } else if (recovery) {
       el.loginHelp.textContent = '恢复令牌用于忘记密码或恢复访问，不会取代日常账号登录。';
     } else {
-      el.loginHelp.textContent = '忘记密码时，可由其他管理员在设置页重置。';
+      el.loginHelp.textContent = '忘记密码时，可由所有者重置；成员也可登录后在设置页自行修改。';
     }
 
     if (!recovery && !el.loginUsername.value) {
@@ -880,6 +900,7 @@
     state.usersLoading = false;
     state.currentUserId = (state.meta && state.meta.userId) || null;
     state.view = 'overview';
+    syncRoleUi();
     resetFilters();
     renderAll();
     switchView('overview');
@@ -951,6 +972,7 @@
     el.codeSize.textContent = '0 KB';
     el.nodeList.innerHTML = '';
     document.body.classList.remove('has-bulk');
+    document.body.classList.remove('is-member');
     window.setTimeout(function () { el.loginUsername.focus(); }, 60);
   }
 
@@ -993,7 +1015,9 @@
 
     el.navCount.textContent = String(total);
     el.modePill.classList.add('is-warning');
-    if (!meta.kv || meta.readonly) {
+    if (!isOwner()) {
+      el.modePillText.textContent = '成员 · 只读';
+    } else if (!meta.kv || meta.readonly) {
       el.modePillText.textContent = '只读模式';
     } else if (meta.corrupted) {
       el.modePillText.textContent = '配置异常';
@@ -1011,9 +1035,9 @@
     el.tokenAlert.hidden = !!meta.hasAuthToken;
     el.emptySubAlert.hidden = !(total > 0 && enabled.length === 0);
     el.heroNodeCount.textContent = String(enabled.length);
-    el.heroStatusText.textContent = kvMissing
-      ? '只读预览 · 尚未连接存储'
-      : (meta.corrupted ? '配置异常 · 当前载入默认节点' : '订阅服务运行中');
+    el.heroStatusText.textContent = !isOwner()
+      ? '成员访问 · 仅显示已分配的节点'
+      : (kvMissing ? '只读预览 · 尚未连接存储' : (meta.corrupted ? '配置异常 · 当前载入默认节点' : '订阅服务运行中'));
     if (el.heroVersion) el.heroVersion.textContent = 'v' + (meta.version || '2.0.0');
 
     if (!total) {
@@ -1025,6 +1049,9 @@
     } else {
       el.heroTitle.innerHTML = '节点已就绪，随时同步<br class="hero-br">至你的每一台设备。';
       el.heroDesc.textContent = '编辑节点或调整分组后无需重新部署，客户端下次刷新订阅即可获取最新配置。';
+    }
+    if (!isOwner()) {
+      el.heroDesc.textContent = '当前账号为只读，仅显示所有者分配的节点；订阅链接会包含这些节点。';
     }
   }
 
@@ -1105,12 +1132,14 @@
         var region = REGION_META[node.region] || REGION_META.other;
         var type = TYPE_META[node.type] || { label: node.type };
         var disabled = node.enabled ? '' : ' <span class="mini-badge">停用</span>';
-        return '<button class="mini-item" type="button" data-edit-id="' + esc(node.id) + '">' +
-          '<span class="mini-avatar avatar-' + esc(node.region) + '">' + region.flag + '</span>' +
+        var inner = '<span class="mini-avatar avatar-' + esc(node.region) + '">' + region.flag + '</span>' +
           '<span class="mini-main"><span class="mini-name">' + esc(node.name) + disabled + '</span>' +
           '<span class="mini-sub">' + esc(node.server) + ':' + esc(node.port) + '</span></span>' +
-          '<span class="type-badge t-' + esc(node.type) + '"><span class="dot"></span>' + esc(type.label) + '</span>' +
-          '</button>';
+          '<span class="type-badge t-' + esc(node.type) + '"><span class="dot"></span>' + esc(type.label) + '</span>';
+        // 成员只读：节点速览保持可读，但不渲染成能打开编辑器的按钮
+        return isOwner()
+          ? '<button class="mini-item" type="button" data-edit-id="' + esc(node.id) + '">' + inner + '</button>'
+          : '<div class="mini-item">' + inner + '</div>';
       }).join('');
     }
 
@@ -1119,7 +1148,12 @@
     el.sysKv.className = 'kv-val ' + (kvMissing ? 'is-warning' : 'is-ok');
     el.sysAuth.textContent = meta.authType === 'recovery'
       ? '恢复令牌会话'
-      : (meta.username ? '账号 · ' + meta.username : '账号登录');
+      : (meta.username ? (isOwner() ? '所有者 · ' : '成员 · ') + meta.username : '账号登录');
+    if (el.overviewAuthNote) {
+      el.overviewAuthNote.textContent = isOwner()
+        ? '登录使用账号密码，可在设置页添加或重置用户；订阅令牌只用于订阅链接。'
+        : '成员账号为只读，可用节点与订阅链接由所有者分配。';
+    }
     el.sysRev.textContent = '#' + state.rev;
     el.sysUpdated.textContent = state.config.updatedAt ? formatFull(state.config.updatedAt) : '尚未保存';
 
@@ -1305,9 +1339,14 @@
 
   /* ---- selection & bulk actions ---- */
 
+  function isOwner() {
+    // 旧版本 Worker 的 meta 没有 role，按原有行为视为所有者
+    return !!(state.meta && state.meta.role !== 'member');
+  }
+
   function canWrite() {
     var meta = state.meta;
-    return !!(meta && meta.kv && !meta.readonly);
+    return !!(meta && meta.kv && !meta.readonly && meta.canWrite !== false && isOwner());
   }
 
   function clearSelection() {
@@ -1616,8 +1655,12 @@
     if (view === 'nodes') renderNodeList();
     if (view === 'overview') renderOverview();
     if (view === 'settings') {
-      renderSettings();
-      loadUsers();
+      if (isOwner()) {
+        renderSettings();
+        loadUsers();
+      } else {
+        renderAccount();
+      }
     }
     window.scrollTo(0, 0);
   }
@@ -1918,8 +1961,122 @@
     renderUsers();
   }
 
+  function syncRoleUi() {
+    var owner = isOwner();
+    document.body.classList.toggle('is-member', !owner);
+    $$('[data-owner-only]').forEach(function (panel) { panel.hidden = !owner; });
+    $$('[data-member-only]').forEach(function (panel) { panel.hidden = owner; });
+  }
+
+  function renderAccount() {
+    var meta = state.meta || {};
+    var scope = meta.scope || {};
+    var count = nodes().length;
+    if (el.accountUsername) el.accountUsername.value = meta.username || '';
+    if (el.accountRole) el.accountRole.textContent = isOwner() ? '所有者' : '成员';
+    if (el.accountScope) {
+      el.accountScope.value = scope.allNodes
+        ? '全部节点（' + count + ' 个）'
+        : count + ' 个可用节点';
+    }
+    if (el.accountSubUrl) {
+      el.accountSubUrl.value = meta.subUrl ? maskToken(meta.subUrl) : '';
+      el.accountSubUrl.placeholder = meta.subUrl ? '' : '订阅链接尚未生成，请稍后刷新';
+    }
+    if (el.accountSubCopy) el.accountSubCopy.disabled = !meta.subUrl;
+    if (el.accountPanel) el.accountPanel.hidden = isOwner();
+  }
+
+  function setPasswordBusy(busy) {
+    if (el.pwSave) {
+      el.pwSave.disabled = busy;
+      el.pwSave.classList.toggle('is-loading', busy);
+    }
+    if (el.pwSpinner) el.pwSpinner.hidden = !busy;
+    if (el.pwSaveLabel) el.pwSaveLabel.textContent = busy ? '更新中…' : '更新密码';
+  }
+
+  function clearPasswordErrors() {
+    if (!el.passwordForm) return;
+    $$('.field.has-error', el.passwordForm).forEach(function (field) { field.classList.remove('has-error'); });
+    $$('[data-error]', el.passwordForm).forEach(function (error) { error.textContent = ''; });
+    $$('[aria-invalid="true"]', el.passwordForm).forEach(function (input) { input.removeAttribute('aria-invalid'); });
+  }
+
+  function showPasswordErrors(errors) {
+    clearPasswordErrors();
+    var global = $('[data-error="global"]', el.passwordForm);
+    (errors || []).forEach(function (error) {
+      var key = error.key || 'global';
+      var target = $('[data-error="' + key + '"]', el.passwordForm) || global;
+      if (!target) return;
+      target.textContent = error.message;
+      if (target === global) return;
+      var field = target.closest('.field');
+      if (field) field.classList.add('has-error');
+      var input = field ? $('input', field) : null;
+      if (input) input.setAttribute('aria-invalid', 'true');
+    });
+  }
+
+  async function submitPasswordChange(event) {
+    if (event) event.preventDefault();
+    if (state.passwordBusy) return;
+    clearPasswordErrors();
+    var current = el.pwCurrent.value || '';
+    var next = el.pwNew.value || '';
+    var confirm = el.pwConfirm.value || '';
+    var errors = [];
+    if (!current) errors.push({ key: 'currentPassword', message: '请输入当前密码' });
+    if (!next) {
+      errors.push({ key: 'newPassword', message: '请输入新密码' });
+    } else if (next.length < PASSWORD_MIN) {
+      errors.push({ key: 'newPassword', message: '密码至少需要 ' + PASSWORD_MIN + ' 个字符' });
+    } else if (next.length > 128) {
+      errors.push({ key: 'newPassword', message: '密码不能超过 128 个字符' });
+    } else if (next !== confirm) {
+      errors.push({ key: 'newPassword', message: '两次输入的新密码不一致' });
+    }
+    if (errors.length) {
+      showPasswordErrors(errors);
+      return;
+    }
+
+    state.passwordBusy = true;
+    setPasswordBusy(true);
+    try {
+      var data = await request('/api/password', {
+        method: 'POST',
+        body: { currentPassword: current, newPassword: next }
+      });
+      if (data && data.token) {
+        state.token = data.token;
+        storageSet('session', STORAGE_KEY, data.token);
+      }
+      el.pwCurrent.value = '';
+      el.pwNew.value = '';
+      el.pwConfirm.value = '';
+      toast('密码已更新，其他设备的登录与旧订阅链接已失效', 'success');
+      await reloadConfig();
+      renderAccount();
+    } catch (err) {
+      if (err.status === 401) {
+        handleUnauthorized();
+        return;
+      }
+      showPasswordErrors([{ key: err.field || 'global', message: err.message || '修改失败，请稍后重试' }]);
+    } finally {
+      state.passwordBusy = false;
+      setPasswordBusy(false);
+    }
+  }
+
   async function loadUsers(force) {
     if (!state.config) return;
+    if (!isOwner()) {
+      renderAccount();
+      return;
+    }
     if (!force && Array.isArray(state.users)) {
       renderUsers();
       return;
@@ -1942,6 +2099,14 @@
     }
   }
 
+  function scopeSummary(user) {
+    if (user.role === 'owner') return '全部节点';
+    var scope = user.scope || {};
+    if (scope.allNodes) return '全部节点';
+    var count = Array.isArray(scope.nodeIds) ? scope.nodeIds.length : 0;
+    return count ? count + ' 个节点' : '未分配节点';
+  }
+
   function renderUsers() {
     if (!el.userList) return;
     var users = Array.isArray(state.users) ? state.users : [];
@@ -1950,20 +2115,28 @@
       syncUserAddState();
       return;
     }
+    var ownerCount = users.filter(function (user) { return user.role === 'owner'; }).length;
     el.userList.innerHTML = users.map(function (user) {
       var current = user.id === state.currentUserId;
-      var last = users.length <= 1;
-      var canDelete = !current && !last;
+      var isOwnerUser = user.role === 'owner';
+      var lastOwner = isOwnerUser && ownerCount <= 1;
+      var canDelete = !current && users.length > 1 && !lastOwner;
       var created = user.createdAt ? formatShort(user.createdAt) : '';
-      var deleteTitle = current ? '不能删除当前登录账号' : '至少需要保留一个账号';
+      var deleteTitle = current
+        ? '不能删除当前登录账号'
+        : (lastOwner ? '至少需要保留一个所有者账号' : (users.length <= 1 ? '至少需要保留一个账号' : '删除账号'));
       return '<div class="user-row' + (current ? ' is-current' : '') + '">' +
         '<span class="user-avatar">' + esc(userInitial(user.username)) + '</span>' +
         '<span class="user-main">' +
           '<span class="user-name" title="' + esc(user.username) + '">' + esc(user.username) + (current ? '<span class="user-badge">当前账号</span>' : '') + '</span>' +
-          '<span class="user-sub">' + (created ? '创建于 ' + esc(created) + ' · ' : '') + '管理员</span>' +
+          '<span class="user-sub">' +
+            '<span class="role-badge' + (isOwnerUser ? ' is-owner' : '') + '">' + (isOwnerUser ? '所有者' : '成员') + '</span>' +
+            '<span>可用 ' + esc(scopeSummary(user)) + '</span>' +
+            (created ? '<span>创建于 ' + esc(created) + '</span>' : '') +
+          '</span>' +
         '</span>' +
         '<span class="user-actions">' +
-          '<button class="btn btn-quiet btn-sm" type="button" data-user-reset="' + esc(user.id) + '">重置密码</button>' +
+          '<button class="btn btn-quiet btn-sm" type="button" data-user-manage="' + esc(user.id) + '">管理</button>' +
           '<button class="btn btn-quiet btn-sm user-delete" type="button" data-user-delete="' + esc(user.id) + '"' +
             (canDelete ? ' title="删除账号" aria-label="删除账号 ' + esc(user.username) + '"' : ' disabled title="' + deleteTitle + '"') +
             '>' + icon('trash') + '</button>' +
@@ -2018,33 +2191,89 @@
     el.userSaveSpinner.hidden = !busy;
     el.userCancel.disabled = busy;
     if (!busy) {
-      el.userSaveLabel.textContent = state.userFormMode === 'reset' ? '保存新密码' : '添加用户';
+      el.userSaveLabel.textContent = state.userFormMode === 'manage' ? '保存修改' : '添加用户';
     }
   }
 
+  function scopeFromForm() {
+    var allNodes = !!(el.userScopeAll && el.userScopeAll.checked);
+    var nodeIds = [];
+    if (!allNodes && el.userScopeList) {
+      $$('input[type="checkbox"]', el.userScopeList).forEach(function (input) {
+        if (input.checked) nodeIds.push(input.value);
+      });
+    }
+    return { allNodes: allNodes, nodeIds: nodeIds };
+  }
+
+  function renderUserScope(scope, role) {
+    if (!el.userScopeField) return;
+    var owner = role === 'owner';
+    var allNodes = owner || !scope || scope.allNodes === true;
+    var selected = {};
+    ((scope && scope.nodeIds) || []).forEach(function (id) { selected[id] = true; });
+    el.userScopeField.hidden = owner;
+    if (el.userScopeAll) {
+      el.userScopeAll.checked = allNodes;
+      el.userScopeAll.disabled = owner;
+    }
+    if (!el.userScopeList) return;
+    el.userScopeList.classList.toggle('is-all', allNodes);
+    var list = nodes();
+    if (!list.length) {
+      el.userScopeList.innerHTML = '<div class="scope-empty">还没有节点；保存后该成员不会获得任何节点。</div>';
+      return;
+    }
+    el.userScopeList.innerHTML = list.map(function (node) {
+      var type = TYPE_META[node.type] || { label: node.type };
+      var region = REGION_META[node.region] || REGION_META.other;
+      var on = allNodes || !!selected[node.id];
+      return '<label class="scope-item">' +
+        '<input class="check-input" type="checkbox" value="' + esc(node.id) + '"' + (on ? ' checked' : '') + (allNodes ? ' disabled' : '') + '>' +
+        '<span class="scope-name">' + esc(node.name) + '</span>' +
+        '<span class="scope-meta">' + esc(region.short) + ' · ' + esc(type.label) + '</span>' +
+        '</label>';
+    }).join('');
+  }
+
+  function syncScopeControls() {
+    var allNodes = !!(el.userScopeAll && el.userScopeAll.checked);
+    if (!el.userScopeList) return;
+    el.userScopeList.classList.toggle('is-all', allNodes);
+    $$('input[type="checkbox"]', el.userScopeList).forEach(function (input) {
+      input.disabled = allNodes;
+      if (allNodes) input.checked = true;
+    });
+  }
+
   function openUserEditor(mode, id) {
-    if (!el.userForm) return;
-    if (mode === 'reset') {
+    if (!el.userForm || !isOwner()) return;
+    if (mode === 'manage') {
       var user = findUser(id);
       if (!user) return;
-      state.userFormMode = 'reset';
+      state.userFormMode = 'manage';
       state.userFormId = id;
-      el.userFormTitle.textContent = '重置密码';
+      el.userFormTitle.textContent = '管理账号';
       el.userFormSub.textContent = user.id === state.currentUserId
-        ? '为当前账号设置新密码，保存后本标签页保持登录。'
-        : '为 ' + user.username + ' 设置新密码，保存后其旧登录立即失效。';
+        ? '调整当前账号的角色与节点范围；密码留空则保持不变。'
+        : '调整 ' + user.username + ' 的角色与可用节点；密码留空则保持不变。';
       el.userUsername.value = user.username;
       el.userUsername.disabled = true;
-      el.userSaveLabel.textContent = '保存新密码';
+      el.userRole.value = user.role === 'owner' ? 'owner' : 'member';
+      renderUserScope(user.scope, user.role);
+      el.userSaveLabel.textContent = '保存修改';
     } else {
       state.userFormMode = 'add';
       state.userFormId = null;
-      el.userFormTitle.textContent = '添加用户';
-      el.userFormSub.textContent = '创建后即可使用该账号登录控制台';
+      el.userFormTitle.textContent = '添加账号';
+      el.userFormSub.textContent = '新账号默认是只读成员，可按需分配节点或设为所有者。';
       el.userUsername.value = '';
       el.userUsername.disabled = false;
+      el.userRole.value = 'member';
+      renderUserScope({ allNodes: false, nodeIds: [] }, 'member');
       el.userSaveLabel.textContent = '添加用户';
     }
+    if (el.userPasswordHint) el.userPasswordHint.hidden = state.userFormMode === 'add';
     el.userPassword.value = '';
     el.userPassword2.value = '';
     clearUserErrors();
@@ -2065,6 +2294,8 @@
     state.userFormId = null;
     el.userUsername.value = '';
     el.userUsername.disabled = false;
+    if (el.userRole) el.userRole.value = 'member';
+    if (el.userPasswordHint) el.userPasswordHint.hidden = true;
     el.userPassword.value = '';
     el.userPassword2.value = '';
     clearUserErrors();
@@ -2074,26 +2305,31 @@
 
   function collectUserForm() {
     var errors = [];
+    var mode = state.userFormMode;
     var username = String(el.userUsername.value || '').trim();
     var password = el.userPassword.value || '';
     var confirm = el.userPassword2.value || '';
-    if (state.userFormMode === 'add') {
+    var role = el.userRole && el.userRole.value === 'owner' ? 'owner' : 'member';
+    var scope = role === 'owner' ? { allNodes: true, nodeIds: [] } : scopeFromForm();
+    if (mode === 'add') {
       if (!username) {
         errors.push({ key: 'username', message: '请输入用户名' });
       } else if (!USERNAME_RE.test(username)) {
         errors.push({ key: 'username', message: '需 3–254 位，以字母或数字开头，可含 . _ + @ -，也可直接填写邮箱' });
       }
     }
-    if (!password) {
-      errors.push({ key: 'password', message: '请输入密码' });
-    } else if (password.length < PASSWORD_MIN) {
-      errors.push({ key: 'password', message: '密码至少需要 ' + PASSWORD_MIN + ' 个字符' });
-    } else if (password.length > 128) {
-      errors.push({ key: 'password', message: '密码不能超过 128 个字符' });
-    } else if (password !== confirm) {
-      errors.push({ key: 'password', message: '两次输入的密码不一致' });
+    if (mode === 'add' || password) {
+      if (!password) {
+        errors.push({ key: 'password', message: '请输入密码' });
+      } else if (password.length < PASSWORD_MIN) {
+        errors.push({ key: 'password', message: '密码至少需要 ' + PASSWORD_MIN + ' 个字符' });
+      } else if (password.length > 128) {
+        errors.push({ key: 'password', message: '密码不能超过 128 个字符' });
+      } else if (password !== confirm) {
+        errors.push({ key: 'password', message: '两次输入的密码不一致' });
+      }
     }
-    return { username: username, password: password, errors: errors };
+    return { username: username, password: password, role: role, scope: scope, errors: errors };
   }
 
   async function submitUserForm(event) {
@@ -2114,18 +2350,26 @@
       if (mode === 'add') {
         data = await request('/api/users', {
           method: 'POST',
-          body: { rev: state.usersRev, username: result.username, password: result.password }
+          body: {
+            rev: state.usersRev,
+            username: result.username,
+            password: result.password,
+            role: result.role,
+            scope: result.scope
+          }
         });
       } else {
-        data = await request('/api/users/update', {
-          method: 'POST',
-          body: { rev: state.usersRev, id: id, password: result.password }
-        });
+        var body = { rev: state.usersRev, id: id, role: result.role, scope: result.scope };
+        if (result.password) body.password = result.password;
+        data = await request('/api/users/update', { method: 'POST', body: body });
       }
       applyUsersResponse(data);
       closeUserEditor();
-      if (mode === 'add') toast('已添加用户「' + result.username + '」', 'success');
-      else toast(id === state.currentUserId ? '密码已更新，当前登录保持有效' : '密码已重置，该账号的旧登录已失效', 'success');
+      if (mode === 'add') {
+        toast('已添加' + (result.role === 'owner' ? '所有者' : '成员') + '「' + result.username + '」', 'success');
+      } else {
+        toast(result.password ? '账号权限与密码已更新' : '账号权限已更新', 'success');
+      }
     } catch (err) {
       if (err.status === 401) {
         handleUnauthorized();
@@ -2146,8 +2390,13 @@
       toast('不能删除当前登录账号', 'info');
       return;
     }
-    if ((state.users || []).length <= 1) {
+    var users = state.users || [];
+    if (users.length <= 1) {
       toast('至少需要保留一个管理员账号', 'info');
+      return;
+    }
+    if (user.role === 'owner' && users.filter(function (item) { return item.role === 'owner'; }).length <= 1) {
+      toast('至少需要保留一个所有者账号', 'info');
       return;
     }
     state.userDeletingId = id;
@@ -2156,7 +2405,7 @@
       segments: [
         { text: '即将删除 ' },
         { strong: true, text: user.username },
-        { text: '，该账号会立即退出登录且无法恢复。' }
+        { text: '，该账号会立即退出登录，其独立订阅链接同时失效且无法恢复。' }
       ],
       okLabel: '删除账号',
       danger: true,
@@ -2210,6 +2459,10 @@
   function ensureWritable() {
     var meta = state.meta;
     if (!meta) return false;
+    if (!isOwner()) {
+      toast('成员账号为只读，节点与设置只能由所有者修改', 'info');
+      return false;
+    }
     if (!meta.kv || meta.readonly) {
       openModal('kv');
       toast('当前为只读模式，绑定 KV 存储后才能保存修改', 'info');
@@ -4399,15 +4652,32 @@
     }
     if (el.userList) {
       on(el.userList, 'click', function (event) {
-        var reset = event.target.closest('[data-user-reset]');
-        if (reset) {
-          openUserEditor('reset', reset.dataset.userReset);
+        var manage = event.target.closest('[data-user-manage]');
+        if (manage) {
+          openUserEditor('manage', manage.dataset.userManage);
           return;
         }
         var remove = event.target.closest('[data-user-delete]');
         if (remove && !remove.disabled) askDeleteUser(remove.dataset.userDelete);
       });
     }
+    if (el.userRole) {
+      on(el.userRole, 'change', function () {
+        var role = el.userRole.value === 'owner' ? 'owner' : 'member';
+        var previousHidden = el.userScopeField ? el.userScopeField.hidden : false;
+        var scope = role === 'owner' || previousHidden ? { allNodes: false, nodeIds: [] } : scopeFromForm();
+        renderUserScope(scope, role);
+      });
+    }
+    if (el.userScopeAll) on(el.userScopeAll, 'change', syncScopeControls);
+    if (el.passwordForm) {
+      on(el.passwordForm, 'submit', submitPasswordChange);
+      on(el.passwordForm, 'input', clearPasswordErrors);
+    }
+    if (el.accountSubCopy) on(el.accountSubCopy, 'click', function () {
+      var url = state.meta && state.meta.subUrl;
+      if (url) copyText(url, '我的订阅链接已复制');
+    });
     on(el.settingsClear, 'click', function () {
       setField(el.setUuid, '');
       setField(el.setPbk, '');

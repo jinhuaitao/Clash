@@ -4,7 +4,7 @@ export default {
   },
 }
 
-const VERSION = '2.7.0'
+const VERSION = '2.8.0'
 const CONFIG_KEY = 'config'
 const USERS_KEY = 'users'
 const MAX_NODES = 300
@@ -370,6 +370,40 @@ function isDecodableBase64Url(value) {
   }
 }
 
+const ROLES = ['owner', 'member']
+
+/* 节点范围只存节点 id：名称 / 服务器会变，id 才是稳定标识。
+   读取 KV 时也走这里，因此对旧数据必须是宽松的（丢弃无法识别的项，而不是抛错）。 */
+function sanitizeScope(input) {
+  const out = { allNodes: false, nodeIds: [] }
+  if (!input || typeof input !== 'object') return out
+  out.allNodes = input.allNodes === true
+  if (!Array.isArray(input.nodeIds)) return out
+  const seen = new Set()
+  for (const item of input.nodeIds) {
+    if (typeof item !== 'string') continue
+    const id = item.slice(0, 64)
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    out.nodeIds.push(id)
+    if (out.nodeIds.length >= MAX_NODES) break
+  }
+  return out
+}
+
+function validateScope(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new HttpError(400, '节点可用范围格式不正确', 'scope')
+  }
+  if (input.allNodes !== undefined && typeof input.allNodes !== 'boolean') {
+    throw new HttpError(400, '节点可用范围格式不正确', 'scope')
+  }
+  if (input.nodeIds !== undefined && !Array.isArray(input.nodeIds)) {
+    throw new HttpError(400, '节点可用范围格式不正确', 'scope')
+  }
+  return sanitizeScope(input)
+}
+
 function normalizeStoredUser(raw) {
   if (!raw || typeof raw !== 'object') throw new Error('invalid user')
   if (typeof raw.id !== 'string' || !raw.id) throw new Error('invalid user id')
@@ -393,7 +427,26 @@ function normalizeStoredUser(raw) {
     passwordIterations: iterations,
     version,
     createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : new Date().toISOString(),
+    role: ROLES.includes(raw.role) ? raw.role : '',
+    scope: raw.scope === undefined ? null : sanitizeScope(raw.scope),
   }
+}
+
+/* 升级迁移：旧记录没有 role，按「首个账号为所有者，其余为成员」处理。
+   旧成员保留全部节点（升级不能突然掐断已有订阅），新成员由所有者显式分配。
+   迁移只在内存中完成，下一次所有者写账号时自然落盘，读路径不产生 KV 写入。 */
+function migrateUserRoles(users) {
+  const hasOwner = users.some(user => user.role === 'owner')
+  return users.map((user, index) => {
+    const legacy = !user.role
+    let role = legacy ? 'member' : user.role
+    if (legacy && !hasOwner && index === 0) role = 'owner'
+    let scope
+    if (role === 'owner') scope = { allNodes: true, nodeIds: [] }
+    else if (user.scope) scope = user.scope
+    else scope = { allNodes: legacy, nodeIds: [] }
+    return { ...user, role, scope }
+  })
 }
 
 async function readUsersStore(env) {
@@ -415,7 +468,7 @@ async function readUsersStore(env) {
     if (typeof parsed.secret !== 'string' || base64UrlToBytes(parsed.secret).length < 16) {
       throw new Error('invalid session secret')
     }
-    const users = parsed.users.map(normalizeStoredUser)
+    const users = migrateUserRoles(parsed.users.map(normalizeStoredUser))
     return {
       store: {
         v: 1,
@@ -445,7 +498,13 @@ async function writeUsersStore(env, store) {
 }
 
 function publicUser(user) {
-  return { id: user.id, username: user.username, createdAt: user.createdAt }
+  return {
+    id: user.id,
+    username: user.username,
+    createdAt: user.createdAt,
+    role: user.role,
+    scope: { allNodes: user.scope.allNodes, nodeIds: user.scope.nodeIds.slice() },
+  }
 }
 
 /* 账号接口共用：区分「没绑 KV」「还没初始化」「数据损坏」三种状态，
@@ -481,6 +540,30 @@ function looksLikeSessionToken(value) {
     /^[A-Za-z0-9_-]+$/.test(parts[1])
 }
 
+/* 每个成员一条独立订阅链接：令牌由账号 id + 版本派生，改密（version+1）即失效。
+   服务端不需要额外存储，也无法从令牌反推出其他账号的链接。 */
+async function deriveSubscriptionToken(user, secret) {
+  const signature = await hmacSign(secret, `sub|${user.id}|${user.version}`)
+  return 'sub_' + bytesToBase64Url(signature)
+}
+
+function isOwner(principal) {
+  return !!principal && principal.role === 'owner'
+}
+
+function requireOwner(principal, message) {
+  if (!isOwner(principal)) throw new HttpError(403, message || '只有所有者可以执行此操作')
+}
+
+/* 成员的控制台与订阅都只包含其可用节点；所有者（及全局订阅令牌）不受限制 */
+function filterConfigForPrincipal(config, principal) {
+  if (!principal || isOwner(principal)) return config
+  const scope = principal.scope || { allNodes: false, nodeIds: [] }
+  if (scope.allNodes) return config
+  const allowed = new Set(scope.nodeIds)
+  return { ...config, nodes: config.nodes.filter(node => allowed.has(node.id)) }
+}
+
 async function authenticateRequest(request, env) {
   const supplied = bearerToken(request)
   if (!supplied) return null
@@ -489,7 +572,14 @@ async function authenticateRequest(request, env) {
   if (dedicated) {
     if (tokenEqual(supplied, dedicated)) {
       clearLoginFailures(request, RECOVERY_RATE_KEY)
-      return { kind: 'recovery', username: '部署恢复令牌', userId: null, user: null }
+      return {
+        kind: 'recovery',
+        username: '部署恢复令牌',
+        userId: null,
+        user: null,
+        role: 'owner',
+        scope: { allNodes: true, nodeIds: [] },
+      }
     }
     // 既不是恢复令牌、也不像会话令牌：按恢复通道爆破处理（8 次 / 10 分钟）
     if (!looksLikeSessionToken(supplied)) {
@@ -505,7 +595,17 @@ async function authenticateRequest(request, env) {
   if (!payload) return null
   const user = store.users.find(item => item.id === payload.sub)
   if (!user || Number(payload.ver) !== user.version) return null
-  return { kind: 'session', username: user.username, userId: user.id, user }
+  return {
+    kind: 'session',
+    username: user.username,
+    userId: user.id,
+    user,
+    role: user.role,
+    scope: user.scope,
+    subscriptionToken: user.role === 'member'
+      ? await deriveSubscriptionToken(user, store.secret)
+      : null,
+  }
 }
 
 async function subscriptionAccess(env, token) {
@@ -513,8 +613,21 @@ async function subscriptionAccess(env, token) {
   if (typeof token !== 'string' || !token || token.length > AUTH_TOKEN_MAX) return null
   const config = (await readConfig(env)).config
   const expected = effectiveAuthToken(config, env)
-  if (!expected || !tokenEqual(token, expected)) return null
-  return { config }
+  if (expected && tokenEqual(token, expected)) return { config }
+  if (!token.startsWith('sub_')) return null
+
+  const { store } = await readUsersStore(env)
+  if (!store) return null
+  // 逐账号比较且不提前退出：避免通过响应时间判断令牌属于哪个账号
+  let matched = null
+  for (const user of store.users) {
+    const candidate = await deriveSubscriptionToken(user, store.secret)
+    if (tokenEqual(token, candidate)) matched = user
+  }
+  if (!matched) return null
+  return {
+    config: filterConfigForPrincipal(config, { role: matched.role, scope: matched.scope }),
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -942,17 +1055,24 @@ async function handleApi(request, url, path, env) {
     if (request.method === 'GET') {
       const result = await readConfig(env)
       return json({
-        config: publicConfig(result.config),
-        meta: buildMeta(url, result, env, principal),
+        config: publicConfig(filterConfigForPrincipal(result.config, principal)),
+        meta: await buildMeta(url, result, env, principal),
       })
     }
     if (request.method === 'PUT') {
+      requireOwner(principal)
       return await apiSave(request, url, env, principal)
     }
     return json({ error: '不支持的请求方法' }, 405)
   }
 
+  if (path === '/api/password') {
+    if (request.method !== 'POST') return json({ error: '不支持的请求方法' }, 405)
+    return await apiChangePassword(request, env, principal)
+  }
+
   if (path === '/api/users' || path === '/api/users/update' || path === '/api/users/delete') {
+    requireOwner(principal)
     return await apiUsers(request, path, env, principal)
   }
 
@@ -964,7 +1084,7 @@ async function handleApi(request, url, path, env) {
     } catch (err) {
       result = { config: emptyConfig(), readonly: true, corrupted: false }
     }
-    return new Response(buildYaml(result.config), {
+    return new Response(buildYaml(filterConfigForPrincipal(result.config, principal)), {
       headers: {
         ...baseHeaders(),
         'content-type': 'text/yaml;charset=UTF-8',
@@ -1034,6 +1154,8 @@ async function apiSetup(request, env) {
     ...record,
     version: 1,
     createdAt: new Date().toISOString(),
+    role: 'owner',
+    scope: { allNodes: true, nodeIds: [] },
   }
   const store = {
     v: 1,
@@ -1106,6 +1228,7 @@ async function apiLogin(request, env) {
 }
 
 async function apiUsers(request, path, env, principal) {
+  requireOwner(principal)
   if (path === '/api/users') {
     if (request.method === 'GET') {
       const result = await readUsersStore(env)
@@ -1124,6 +1247,8 @@ async function apiCreateUser(request, env, principal) {
   const body = await readJsonBody(request)
   const username = validateUsername(body.username)
   const password = validatePassword(body.password)
+  const role = body.role === undefined ? 'member' : body.role
+  if (!ROLES.includes(role)) throw new HttpError(400, '账号角色不正确', 'role')
 
   const result = await readUsersStore(env)
   if (!result.store) {
@@ -1149,6 +1274,9 @@ async function apiCreateUser(request, env, principal) {
     ...record,
     version: 1,
     createdAt: new Date().toISOString(),
+    role,
+    // 新成员默认不分配节点；所有者天然拥有全部节点
+    scope: role === 'owner' ? { allNodes: true, nodeIds: [] } : validateScope(body.scope || {}),
   }
   const next = {
     ...store,
@@ -1163,7 +1291,13 @@ async function apiCreateUser(request, env, principal) {
 async function apiUpdateUser(request, env, principal) {
   const body = await readJsonBody(request)
   const id = typeof body.id === 'string' ? body.id.slice(0, 64) : ''
-  const password = validatePassword(body.password)
+  // 密码留空表示不修改（账号范围 / 角色的调整不应强制所有者重设密码）
+  const password = body.password === undefined || body.password === null || body.password === ''
+    ? ''
+    : validatePassword(body.password)
+  if (body.role !== undefined && !ROLES.includes(body.role)) {
+    throw new HttpError(400, '账号角色不正确', 'role')
+  }
 
   const usersResult = await readUsersStore(env)
   if (!usersResult.store) return usersStoreError(usersResult)
@@ -1174,8 +1308,28 @@ async function apiUpdateUser(request, env, principal) {
   const target = store.users.find(item => item.id === id)
   if (!target) return json({ error: '用户不存在或已被删除' }, 404)
 
-  const record = await buildPasswordRecord(password, passwordIterations(env))
-  const updated = { ...target, ...record, version: target.version + 1 }
+  const role = body.role === undefined ? target.role : body.role
+  if (target.role === 'owner' && role !== 'owner'
+    && store.users.filter(item => item.role === 'owner').length <= 1) {
+    return json({ error: '至少需要保留一个所有者账号' }, 400)
+  }
+  let scope
+  if (role === 'owner') {
+    scope = { allNodes: true, nodeIds: [] }
+  } else if (body.scope !== undefined) {
+    scope = validateScope(body.scope)
+  } else if (target.role === 'member') {
+    scope = target.scope
+  } else {
+    // 从所有者降为成员且未指定范围：默认不分配节点，避免越权
+    scope = { allNodes: false, nodeIds: [] }
+  }
+
+  let updated = { ...target, role, scope }
+  if (password) {
+    const record = await buildPasswordRecord(password, passwordIterations(env))
+    updated = { ...updated, ...record, version: target.version + 1 }
+  }
   const next = {
     ...store,
     rev: store.rev + 1,
@@ -1185,7 +1339,7 @@ async function apiUpdateUser(request, env, principal) {
   await writeUsersStore(env, next)
 
   const response = usersResponse(next, principal)
-  if (principal.kind === 'session' && principal.userId === id) {
+  if (password && principal.kind === 'session' && principal.userId === id) {
     response.token = await createSessionToken(updated, next.secret)
   }
   return json(response)
@@ -1207,6 +1361,9 @@ async function apiDeleteUser(request, env, principal) {
   if (principal.kind === 'session' && principal.userId === id) {
     return json({ error: '不能删除当前登录账号，请使用其他账号操作' }, 400)
   }
+  if (target.role === 'owner' && store.users.filter(item => item.role === 'owner').length <= 1) {
+    return json({ error: '至少需要保留一个所有者账号' }, 400)
+  }
 
   const next = {
     ...store,
@@ -1216,6 +1373,51 @@ async function apiDeleteUser(request, env, principal) {
   }
   await writeUsersStore(env, next)
   return json(usersResponse(next, principal))
+}
+
+/* 成员自助改密：需要当前密码，成功后 version+1。
+   version 同时参与会话与账号订阅令牌的派生，因此旧登录与旧订阅链接会一起失效，
+   响应里返回新的会话令牌，前端无需重新登录。 */
+async function apiChangePassword(request, env, principal) {
+  if (principal.kind !== 'session' || !principal.userId) {
+    throw new HttpError(403, '部署恢复令牌无需修改密码')
+  }
+  const body = await readJsonBody(request)
+  const current = typeof body.currentPassword === 'string' ? body.currentPassword : ''
+  const nextPassword = validatePassword(body.newPassword)
+
+  const limitKey = '__password__|' + principal.username
+  const limited = checkLoginRateLimit(request, limitKey)
+  if (limited) return limited
+
+  const result = await readUsersStore(env)
+  if (!result.store) return usersStoreError(result)
+  const store = result.store
+  if (body.rev !== undefined && Number(body.rev) !== store.rev) {
+    return json({ error: '账号信息已在其他窗口更新，请刷新后重试', rev: store.rev }, 409)
+  }
+  const target = store.users.find(item => item.id === principal.userId)
+  if (!target) return json({ error: '账号不存在或已被删除' }, 404)
+
+  const ok = current.length <= PASSWORD_MAX && await verifyPassword(current, target)
+  if (!ok) {
+    recordLoginFailure(request, limitKey)
+    return json({ error: '当前密码不正确', field: 'currentPassword' }, 400)
+  }
+  clearLoginFailures(request, limitKey)
+
+  const record = await buildPasswordRecord(nextPassword, passwordIterations(env))
+  const updated = { ...target, ...record, version: target.version + 1 }
+  const next = {
+    ...store,
+    rev: store.rev + 1,
+    users: store.users.map(item => item.id === target.id ? updated : item),
+    updatedAt: new Date().toISOString(),
+  }
+  await writeUsersStore(env, next)
+
+  const token = await createSessionToken(updated, next.secret)
+  return json({ token, user: publicUser(updated) })
 }
 
 async function readJsonBody(request) {
@@ -1254,6 +1456,7 @@ function maskedAuthToken(config, env) {
 }
 
 async function apiSave(request, url, env, principal) {
+  requireOwner(principal)
   const body = await readJsonBody(request)
 
   const current = await readConfig(env, { seed: true })
@@ -1307,27 +1510,39 @@ async function apiSave(request, url, env, principal) {
 
   return json({
     config: publicConfig(next),
-    meta: buildMeta(url, { readonly: false, corrupted: false, config: next }, env, principal),
+    meta: await buildMeta(url, { readonly: false, corrupted: false, config: next }, env, principal),
   })
 }
 
-function buildMeta(url, result, env, principal) {
+/* 成员的 meta 只暴露自己的订阅链接：全局 AUTH_TOKEN 是「全部节点」凭据，
+   不能因为成员登录就下发到他的浏览器里。 */
+async function buildMeta(url, result, env, principal) {
   const stored = storedAuthToken(result.config)
   const envToken = authToken(env)
   const auth = stored || envToken
+  const owner = isOwner(principal)
+  const role = owner ? 'owner' : 'member'
+  const accountToken = !owner && principal ? principal.subscriptionToken : null
+  const subToken = owner ? auth : accountToken
   return {
     version: VERSION,
     kv: !!kvBinding(env),
     readonly: !!result.readonly,
     corrupted: !!result.corrupted,
-    hasAuthToken: !!auth,
+    hasAuthToken: owner ? !!auth : !!accountToken,
     // 令牌来源与掩码末位足够前端判断状态，明文只在订阅链接里出现一次
-    authSource: stored ? 'settings' : (envToken ? 'environment' : 'none'),
-    authTokenHint: auth ? maskedAuthToken(result.config, env) : null,
-    subUrl: auth ? `${url.origin}/?token=${encodeURIComponent(auth)}` : null,
+    authSource: owner ? (stored ? 'settings' : (envToken ? 'environment' : 'none')) : 'account',
+    authTokenHint: subToken ? maskedAuthToken({ authToken: subToken }, env) : null,
+    subUrl: subToken ? `${url.origin}/?token=${encodeURIComponent(subToken)}` : null,
     authType: principal ? principal.kind : null,
     username: principal ? principal.username : null,
     userId: principal && principal.userId ? principal.userId : null,
+    role,
+    canWrite: owner && !!kvBinding(env) && !result.readonly,
+    canManageUsers: owner,
+    scope: principal && principal.scope
+      ? { allNodes: !!principal.scope.allNodes, nodeIds: principal.scope.nodeIds.slice() }
+      : { allNodes: true, nodeIds: [] },
   }
 }
 

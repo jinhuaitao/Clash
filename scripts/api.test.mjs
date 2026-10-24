@@ -492,6 +492,138 @@ group('账号管理')
   eq('不能删掉最后一个账号（用恢复通道试）', (await call(env, '/api/users/delete', { method: 'POST', headers: { authorization: 'Bearer ' + other.body.token, 'content-type': 'application/json' }, body: JSON.stringify({ id: last.id }) })).body.error.includes('至少需要保留'), true)
 }
 
+group('角色与节点范围')
+{
+  const env = makeEnv()
+  const ownerToken = await initConsole(env)
+  await putConfig(env, ownerToken, { rev: 0, nodes: fullNodes(), authToken: SUB_TOKEN })
+
+  const ownerLogin = await login(env)
+  eq('初始化账号是所有者', ownerLogin.body.user.role, 'owner')
+  const list = (await call(env, '/api/users', { headers: bearer(ownerToken) })).body
+  eq('账号列表带角色', list.users[0].role, 'owner')
+
+  const createUser = async (username, password, extra) => {
+    const users = (await call(env, '/api/users', { headers: bearer(ownerToken) })).body
+    return call(env, '/api/users', {
+      method: 'POST',
+      headers: { ...bearer(ownerToken), 'content-type': 'application/json' },
+      body: JSON.stringify({ rev: users.rev, username, password, ...extra }),
+    })
+  }
+
+  const created = await createUser('member', 'Member-Pass-77', {
+    role: 'member',
+    scope: { allNodes: false, nodeIds: ['n_hk1', 'n_hk2', 'n_hk1'] },
+  })
+  eq('创建成员 200', created.status, 200)
+  const member = created.body.users.find(user => user.username === 'member')
+  eq('指定范围去重后生效', member.scope.nodeIds.length, 2)
+
+  const bare = await createUser('bare', 'Bare-Pass-123')
+  const bareUser = bare.body.users.find(user => user.username === 'bare')
+  eq('新成员默认不分配节点', bareUser.role === 'member' && bareUser.scope.allNodes === false && bareUser.scope.nodeIds.length === 0, true)
+
+  const memberLogin = await login(env, 'member', 'Member-Pass-77')
+  const memberToken = memberLogin.body.token
+  eq('成员登录成功', typeof memberToken, 'string')
+  eq('登录响应带角色', memberLogin.body.user.role, 'member')
+
+  const cfg = await getConfig(env, memberToken)
+  eq('成员只看到授权节点', cfg.body.config.nodes.length, 2)
+  check('成员配置里没有全局令牌', !JSON.stringify(cfg.body).includes(SUB_TOKEN))
+  eq('成员 meta 标记只读', cfg.body.meta.canWrite, false)
+  eq('成员 meta 角色', cfg.body.meta.role, 'member')
+  check('成员订阅链接是独立令牌', cfg.body.meta.subUrl.includes('token=sub_'), cfg.body.meta.subUrl)
+
+  const preview = await call(env, '/api/preview', { headers: bearer(memberToken) })
+  check('成员预览只含授权节点', preview.body.includes('HK-01') && !preview.body.includes('US-01'))
+
+  const saveAsMember = await putConfig(env, memberToken, { rev: cfg.body.config.rev, nodes: [] })
+  eq('成员不能保存配置', saveAsMember.status, 403)
+  eq('成员不能列出账号', (await call(env, '/api/users', { headers: bearer(memberToken) })).status, 403)
+  eq('成员不能创建账号', (await call(env, '/api/users', {
+    method: 'POST',
+    headers: { ...bearer(memberToken), 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'evil', password: 'Evil-Pass-1234' }),
+  })).status, 403)
+
+  const memberSubToken = new URL(cfg.body.meta.subUrl).searchParams.get('token')
+  const memberSub = await call(env, '/?token=' + encodeURIComponent(memberSubToken))
+  eq('成员独立订阅 200', memberSub.status, 200)
+  check('成员订阅只含授权节点', memberSub.body.includes('HK-01') && !memberSub.body.includes('US-01'))
+  eq('成员订阅 HEAD 200', (await call(env, '/?token=' + encodeURIComponent(memberSubToken), { method: 'HEAD' })).status, 200)
+  check('全局令牌仍是全部节点', (await call(env, '/?token=' + SUB_TOKEN)).body.includes('US-01'))
+
+  const before = (await call(env, '/api/users', { headers: bearer(ownerToken) })).body
+  const memberId = before.users.find(user => user.username === 'member').id
+  const expanded = await call(env, '/api/users/update', {
+    method: 'POST',
+    headers: { ...bearer(ownerToken), 'content-type': 'application/json' },
+    body: JSON.stringify({ rev: before.rev, id: memberId, scope: { allNodes: true, nodeIds: [] } }),
+  })
+  eq('所有者调整节点范围 200', expanded.status, 200)
+  const cfgExpanded = await getConfig(env, memberToken)
+  eq('范围调整后成员可见全部节点', cfgExpanded.body.config.nodes.length, fullNodes().length)
+  eq('范围调整不轮换订阅令牌', new URL(cfgExpanded.body.meta.subUrl).searchParams.get('token'), memberSubToken)
+
+  const badPassword = await call(env, '/api/password', {
+    method: 'POST',
+    headers: { ...bearer(memberToken), 'content-type': 'application/json' },
+    body: JSON.stringify({ currentPassword: 'wrong-password', newPassword: 'Member-Pass-88' }),
+  })
+  eq('当前密码错误被拒', badPassword.status, 400)
+
+  const changed = await call(env, '/api/password', {
+    method: 'POST',
+    headers: { ...bearer(memberToken), 'content-type': 'application/json' },
+    body: JSON.stringify({ currentPassword: 'Member-Pass-77', newPassword: 'Member-Pass-88' }),
+  })
+  eq('成员自助改密 200', changed.status, 200)
+  check('改密返回新会话', typeof changed.body.token === 'string' && changed.body.token !== memberToken)
+  eq('旧会话立即失效', (await getConfig(env, memberToken)).status, 401)
+  check('旧订阅链接不再下发节点', !(await call(env, '/?token=' + encodeURIComponent(memberSubToken))).body.includes('HK-01'))
+  const cfgRotated = await getConfig(env, changed.body.token)
+  const rotatedSub = new URL(cfgRotated.body.meta.subUrl).searchParams.get('token')
+  check('新订阅链接立即可用', (await call(env, '/?token=' + encodeURIComponent(rotatedSub))).body.includes('HK-01'))
+
+  const ownerId = before.users.find(user => user.role === 'owner').id
+  const latestUsers = (await call(env, '/api/users', { headers: bearer(ownerToken) })).body
+  const demote = await call(env, '/api/users/update', {
+    method: 'POST',
+    headers: { ...bearer(ownerToken), 'content-type': 'application/json' },
+    body: JSON.stringify({ rev: latestUsers.rev, id: ownerId, role: 'member' }),
+  })
+  eq('最后一个所有者不能降级', demote.status, 400)
+}
+
+group('旧账号库迁移')
+{
+  const env = makeEnv()
+  const token = await initConsole(env)
+  await putConfig(env, token, { rev: 0, nodes: fullNodes() })
+  const raw = JSON.parse(env.data.get('users'))
+  delete raw.users[0].role
+  delete raw.users[0].scope
+  raw.users.push({
+    ...raw.users[0],
+    id: 'u_legacy_second',
+    username: 'legacy2',
+    usernameKey: 'legacy2',
+  })
+  env.data.set('users', JSON.stringify(raw))
+
+  const first = await login(env)
+  eq('旧库首个账号成为所有者', first.body.user.role, 'owner')
+  const second = await login(env, 'legacy2', 'Correct Horse 1')
+  eq('旧库其余账号成为成员', second.body.user.role, 'member')
+  eq('旧成员默认保留全部节点', second.body.user.scope.allNodes, true)
+  const cfg = await getConfig(env, second.body.token)
+  eq('旧成员订阅不被收窄', cfg.body.config.nodes.length, fullNodes().length)
+  eq('旧成员默认只读', cfg.body.meta.canWrite, false)
+  eq('旧成员不能管理账号', (await call(env, '/api/users', { headers: bearer(second.body.token) })).status, 403)
+}
+
 group('KV 异常降级')
 {
   const dead = makeEnv({ failWrite: true })

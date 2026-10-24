@@ -2242,6 +2242,35 @@ mark.code-hit.is-current { background: #facc15; color: #1e293b; box-shadow: 0 0 
 .user-name { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 12.5px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .user-badge { flex: none; padding: 1px 7px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-text); font-size: 9.5px; font-weight: 650; letter-spacing: .02em; }
 .user-sub { font-size: 10.5px; color: var(--faint); }
+.user-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 8px; }
+.role-badge { flex: none; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); font-size: 9.5px; font-weight: 650; letter-spacing: .02em; }
+.role-badge.is-owner { border-color: transparent; background: var(--accent-soft); color: var(--accent-text); }
+.scope-all { display: inline-flex; align-items: center; gap: 6px; margin: 2px 0 8px; font-size: 12px; color: var(--text-2); cursor: pointer; }
+.scope-all input { margin: 0; }
+.scope-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px 8px; max-height: 172px; overflow: auto; padding: 7px; border: 1px solid var(--line); border-radius: var(--r-3); background: var(--panel-soft); }
+.scope-item { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 5px 6px; border-radius: var(--r-2); font-size: 11.5px; color: var(--text); cursor: pointer; }
+.scope-item:hover { background: var(--panel); }
+.scope-item input { flex: none; margin: 0; }
+.scope-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scope-meta { flex: none; font-size: 10px; color: var(--faint); }
+.scope-list.is-all .scope-item { opacity: .72; }
+.scope-empty { grid-column: 1 / -1; padding: 6px; font-size: 11.5px; color: var(--faint); }
+.account-panel .field { margin-bottom: 12px; }
+.account-panel .field-row { margin-bottom: 0; }
+.account-password { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+.account-password .section-head { margin-bottom: 12px; }
+.account-actions { display: flex; justify-content: flex-end; }
+.account-panel .field-error:not(:empty) { display: block; margin-top: 6px; }
+body.is-member #hero-add,
+body.is-member #nodes-add,
+body.is-member #empty-add,
+body.is-member .cell-check,
+body.is-member .cell-status,
+body.is-member .cell-actions,
+body.is-member .bulk-bar,
+body.is-member #user-add,
+body.is-member .user-actions { display: none !important; }
+body.is-member .node-row { cursor: default; }
 .user-actions { display: flex; align-items: center; gap: 4px; flex: none; }
 .user-actions .btn { height: 30px; padding: 0 9px; font-size: 11px; }
 .user-delete { width: 30px; padding: 0; justify-content: center; color: var(--faint); }
@@ -2256,7 +2285,7 @@ mark.code-hit.is-current { background: #facc15; color: #1e293b; box-shadow: 0 0 
 .user-editor-head span { font-size: 10.5px; color: var(--faint); line-height: 1.5; }
 .user-editor .field { margin-bottom: 12px; }
 .user-editor .field > label { font-size: 11px; }
-.user-editor input { height: 40px; font-size: 12.5px; background: var(--panel); }
+.user-editor input:not([type="checkbox"]) { height: 40px; font-size: 12.5px; background: var(--panel); }
 .user-editor .field-row { gap: 10px; }
 .user-editor .field-row .field { margin-bottom: 0; }
 .user-editor > .field-error:not(:empty) { display: block; margin-top: 8px; }
@@ -2340,6 +2369,7 @@ mark.code-hit.is-current { background: #facc15; color: #1e293b; box-shadow: 0 0 
 
 @media (max-width: 480px) {
   .user-editor .field-row { grid-template-columns: 1fr; gap: 12px; }
+  .scope-list { grid-template-columns: 1fr; max-height: 200px; }
   .user-editor-actions .btn { flex: 1; }
 }
 
