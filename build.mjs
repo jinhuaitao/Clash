@@ -57,6 +57,10 @@ for (const marker of ['/*__CSS__*/', '/*__JS__*/', '__APP_VERSION__']) {
   if (adminHtml.includes(marker)) throw new Error(`Unreplaced admin marker: ${marker}`);
 }
 if (!adminHtml.includes('__CSP_NONCE__')) throw new Error('Admin HTML is missing CSP nonce placeholders');
+// CSP 里 style-src 只认 nonce：<style> 漏掉 nonce 不会报错，只会在浏览器里静默失去全部样式
+if (!/<style\s+nonce="__CSP_NONCE__">/.test(adminTemplate)) {
+  throw new Error('admin/index.html 的 <style> 缺少 CSP nonce 属性');
+}
 
 const escapeTemplate = value => value
   .replace(/\\/g, '\\\\')

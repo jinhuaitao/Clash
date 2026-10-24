@@ -57,8 +57,10 @@ Workers & Pages → **Create** → **Workers** → **Import a repository**，选
 
 | 名称 | 作用 | 必填 |
 | --- | --- | --- |
-| `ADMIN_TOKEN` | 初始化校验（`/api/setup` 需带 `Authorization: Bearer <ADMIN_TOKEN>`）+ 忘记密码时的恢复通道，不参与日常登录 | 否（公开部署建议配） |
+| `ADMIN_TOKEN` | 初始化校验（`/api/setup` 需带 `Authorization: Bearer <ADMIN_TOKEN>`）+ 忘记密码时的恢复通道，不参与日常登录。**少于 16 位、含空白或控制字符的值会被直接忽略**（恢复通道随之不可用），并在日志里提示一次 | 否（公开部署建议配） |
 | `AUTH_TOKEN` | 订阅令牌；也可以只在设置页生成，无需环境变量。少于 16 位或含空白 / 控制字符的值会被忽略 | 否 |
+| `SESSION_SECRET` | 会话签名密钥，32–256 位随机字符串。配置后会话签名不再依赖 KV 里的 secret，**KV 被读走也无法伪造会话**；改动它会立刻让所有已登录会话失效（等价于「强制全员重新登录」） | 否 |
+| `SESSION_TTL_HOURS` | 会话有效期，默认 `168`（7 天），可调范围 1–168。缩短只影响之后签发的令牌，已签发的仍在各自 `exp` 到期后失效 | 否 |
 | `PASSWORD_ITERATIONS` | PBKDF2 迭代次数，默认 `10000`（免费版 CPU 限制），付费计划可提到 `200000`；只影响新建 / 改密的账号 | 否 |
 
 ### 4. KV 自动创建
@@ -72,6 +74,17 @@ binding = "SUB_KV"
 
 若你的 Wrangler 版本报 `Missing id`，手动建一个再填进 `id`：`npx wrangler kv namespace create SUB_KV`。
 
+同一个文件里还声明了两个边缘限流绑定（`RATE_LIMITER` 120 次/分钟、`SUB_RATE_LIMITER` 240 次/分钟）：
+
+```toml
+[[ratelimits]]
+name = "RATE_LIMITER"
+namespace_id = "1001"
+simple = { limit = 120, period = 60 }
+```
+
+Worker 内的内存限流按 isolate 计数，换个 isolate 就重置；这两个绑定把计数放到 Cloudflare 边缘，按 IP 跨 isolate 生效。删掉这段不会报错（代码会自动回落到内存桶），只是限流强度下降。若你的 Wrangler 不支持 `[[ratelimits]]`，先升级到 4.x 或直接注释掉。
+
 ### 5. 开始使用
 
 打开 `https://<worker>.<子域>.workers.dev/admin` → 按提示创建所有者账号 → 「设置 → 访问令牌」生成并保存 `AUTH_TOKEN` → 添加节点。需要共享给他人时，在左侧「用户管理」新建成员并勾选共享节点，成员登录后即可看到自己的订阅链接，也可以添加只对自己生效的个人节点。保存即写入 KV，客户端下次刷新订阅就拿到新配置。
@@ -80,11 +93,11 @@ binding = "SUB_KV"
 
 ## 账号与令牌
 
-- **账号**保存在 KV 的 `users` 键，与订阅配置分离；每个账号带 `role`（`owner` / `member`）和 `scope`（可用节点）。密码只存 PBKDF2-SHA256 哈希（随机盐、默认 10 000 次迭代，可用 `PASSWORD_ITERATIONS` 提高），最短 12 位。
+- **账号**保存在 KV 的 `users` 键，与订阅配置分离；每个账号带 `role`（`owner` / `member`）和 `scope`（可用节点）。密码只存 PBKDF2-SHA256 哈希（随机盐、默认 10 000 次迭代，可用 `PASSWORD_ITERATIONS` 提高），最短 12 位，并且会拒绝「必然被秒破」的口令：常见弱口令、单/双字符重复（`aaaaaaaaaaaa`）、整体为键盘或数字序列（`qwertyuiop12`）、与用户名完全相同。不强制大小写数字符号组合，长口令短语（如 `correct horse battery staple`）照样可用。
 - **所有者**可管理账号、增删全部节点、修改设置，并使用 `AUTH_TOKEN` 拉取全部节点的订阅。**成员**可以查看所有者分配的共享节点，并添加 / 编辑自己的节点；个人节点存在独立的 `user_nodes:<id>` 键里，只合并进该成员的配置、预览与订阅，不会改动管理员配置，也不能修改共享节点。成员可在设置页自行改密。
 - **首个账号自动成为所有者**，之后新建的账号默认是成员。旧版本升级上来的账号库按同一规则补齐：第一个账号升为所有者，其余账号降为成员，并暂时保留全部节点访问，所有者可以在左侧「用户管理」里逐个收窄。
-- **每账号独立订阅链接**：成员的链接由 `secret` 与账号版本派生，输出 `scope` 内的共享节点以及该成员的个人节点；链接不在 KV 里单独存储，改密（版本 +1）后旧链接立即失效，重新登录即可拿到新链接。`AUTH_TOKEN` 仍是只含管理员配置的全局链接。
-- **会话**为 HMAC 签名的 7 天令牌，存在 `sessionStorage`，关闭标签页即失效；重置密码或成员自助改密都会让该账号的旧会话与旧订阅链接立即作废。
+- **每账号独立订阅链接**：成员的链接由 `secret` 与账号版本派生，形如 `sub_<账号定位段>.<签名>`，输出 `scope` 内的共享节点以及该成员的个人节点；链接不在 KV 里单独存储，改密（版本 +1）后旧链接立即失效，重新登录即可拿到新链接。带定位段是为了让校验只做一次 HMAC + 一次查表，未鉴权请求无法用 `sub_` 前缀放大 CPU，也不再有「匹配到哪个账号」的时序信号；不带定位段的旧链接仍然可用，改密后自然轮换到新格式。`AUTH_TOKEN` 仍是只含管理员配置的全局链接。
+- **会话**为 HMAC 签名的令牌（默认 7 天，可用 `SESSION_TTL_HOURS` 缩短），存在 `sessionStorage`，关闭标签页即失效；重置密码或成员自助改密都会让该账号的旧会话与旧订阅链接立即作废。签名密钥优先取环境变量 `SESSION_SECRET`，未配置时才用 KV 内的随机 secret。
 - **`ADMIN_TOKEN` ≠ `AUTH_TOKEN`**：前者是恢复通道，后者只能拉取订阅、不能登录控制台；两者都不要复用同一个值。
 - 订阅令牌保存在设置页时优先于环境变量，改完旧链接立即失效。`/api/config` 不再返回 `config.authToken` 明文，`meta.authTokenHint` 只给掩码（`•…•` + 末 4 位）与令牌来源，设置页输入框也不回显；完整令牌只出现在 `meta.subUrl`（订阅链接本身）这一处，界面上默认打码、点「显示令牌」才展开。需要换新令牌时点「生成」或粘贴完整令牌再保存，输入框留空即保持原值；掩码字符不会被当作合法令牌写入，误粘回输入框会在保存时被拒绝。
 
@@ -205,8 +218,14 @@ LICENSE / CHANGELOG.md 许可与变更记录
 - 成员的专属订阅令牌只能取到 `scope` 内的共享节点与自己的个人节点，且不能登录控制台；如链接外泄，让成员在设置页改密（或所有者重置密码）即可让旧链接立即失效，代价只是重新分发一次新链接。
 - TLS 证书校验默认开启。只有在自签证书且确认链路可信时才勾选「跳过证书校验」，否则等于把加密通道降级成明文可中间人。
 - 设置页与 `/api/config` 都不回显订阅令牌（`config.authToken` 已移除，界面上订阅链接默认打码），录屏、截图、贴设置响应时不会顺手泄漏凭据；备份 JSON 同样不含令牌，恢复后需重新设置。唯一含明文的是 `meta.subUrl`，它等价于订阅链接本身，不要转发或贴进公开渠道。
-- 控制台与伪装页都带 CSP（`script-src 'nonce-…'`、`object-src 'none'`、`worker-src 'none'`、`frame-ancestors 'none'`）、`X-Frame-Options: DENY`、`cross-origin-resource-policy: same-origin`、`cross-origin-opener-policy: same-origin`、`strict-transport-security`、最小化的 `permissions-policy` 和 `noindex`，不进搜索引擎、不能被嵌套、也不给第三方页借用资源。
+- 控制台与伪装页都带 CSP（`script-src 'nonce-…'`、`style-src 'nonce-…'`、`object-src 'none'`、`worker-src 'none'`、`frame-ancestors 'none'`）、`X-Frame-Options: DENY`、`cross-origin-resource-policy: same-origin`、`cross-origin-opener-policy: same-origin`、`strict-transport-security`、最小化的 `permissions-policy` 和 `noindex`，不进搜索引擎、不能被嵌套、也不给第三方页借用资源。样式同样走 nonce 而不是 `'unsafe-inline'`：样式一旦可内联，CSS 选择器配外部 `url()` 就能在不执行脚本的前提下把页面里的属性值逐位漏出去。
 - KV 绑定异常或读写失败时接口返回 `502` 并带可读说明，订阅降级为空配置而不是让请求裸 500 掉进 Worker 错误页；`/api/auth` 的 `corrupted` 字段用来区分「没绑 KV」「未初始化」「数据损坏」三种状态。
+- **凭据类环境变量的形态是硬门槛**：`AUTH_TOKEN`、`ADMIN_TOKEN` 少于 16 位、含空白或控制字符时会被直接忽略（日志提示一次），不会「将就着用」。`ADMIN_TOKEN` 被忽略意味着恢复通道不可用，请配 16 位以上的随机值并写进 Secret。
+- **未配置 `ADMIN_TOKEN` 的公开实例，第一个打开 `/admin` 的人就是所有者**。部署后请立刻完成初始化，或先配好 `ADMIN_TOKEN` 再公开域名；初始化成功时若未配置该变量，日志会明确提示。
+- **边缘限流**：`wrangler.toml` 里的 `[[ratelimits]]` 把 `/api/*`（120 次/分钟）与订阅 / 伪装页（240 次/分钟）的计数放到 Cloudflare 边缘，跨 isolate 生效。内存桶只是兜底，删掉绑定后攻击者换个 isolate 就能重置计数。
+- **请求体边读边限长**：`content-length` 可以缺失或撒谎，服务端在读的过程中累计字节数，超过 256 KB 立即取消读取并返回 `413`，不会先把整个请求体读进内存。
+- **不可见字符会被拒**：节点名、用户名、服务器地址里的零宽 / 双向控制符（如 U+200B、U+202E）会让界面显示成另一串字符（把 `evil.com` 伪装成 `moc.live`），写入与渲染两处都会拦掉。
+- **rule-providers 镜像地址不接受 `#` 与 `?`**：前者会把该行后面的 `path:` / `interval:` 注释掉，后者不参与取文件，两者都只会产出坏配置。
 - 定期「导出备份」到本地：KV 数据只在云端，误删或账号异常时凭备份恢复。
 
 ---

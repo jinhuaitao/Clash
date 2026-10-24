@@ -23,5 +23,23 @@ workers_dev = true
 [[kv_namespaces]]
 binding = "SUB_KV"
 
+# ---------------------------------------------------------------------------
+# 边缘限流（建议保留）
+#
+# Worker 里的内存限流按 isolate 计数，攻击者换一个 isolate 就重置了；
+# 这两个绑定把计数放到 Cloudflare 边缘，按 IP 跨 isolate 生效。
+# 代码在绑定缺失时会自动回落到内存桶，因此删掉这段不会报错，只是限流变弱。
+# namespace_id 只要在本账号内唯一即可，取值随意。
+# ---------------------------------------------------------------------------
+[[ratelimits]]
+name = "RATE_LIMITER"
+namespace_id = "1001"
+simple = { limit = 120, period = 60 }
+
+[[ratelimits]]
+name = "SUB_RATE_LIMITER"
+namespace_id = "1002"
+simple = { limit = 240, period = 60 }
+
 [observability]
 enabled = true

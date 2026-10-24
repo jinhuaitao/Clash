@@ -771,10 +771,14 @@ group('安全加固')
   await putConfig(env, token, { rev: 0, nodes: [ssNode({ id: 'a', name: 'A-01' })], authToken: SUB_TOKEN })
 
   const decoy = await call(env, '/')
-  eq('伪装页带 HSTS', decoy.headers.get('strict-transport-security'), 'max-age=15552000')
+  eq('伪装页带 HSTS', decoy.headers.get('strict-transport-security'), 'max-age=15552000; includeSubDomains')
   eq('伪装页带 COOP', decoy.headers.get('cross-origin-opener-policy'), 'same-origin')
   const head = await call(env, '/', { method: 'HEAD' })
   check('HEAD 伪装页也带 CSP', /script-src 'nonce-[0-9a-f]{32}'/.test(String(head.headers.get('content-security-policy'))))
+  const csp = String(decoy.headers.get('content-security-policy'))
+  const decoyNonce = (csp.match(/script-src 'nonce-([0-9a-f]{32})'/) || [])[1]
+  check('伪装页不再放开 style unsafe-inline', !csp.includes("style-src 'unsafe-inline'"), csp)
+  check('伪装页 style 标签带同一 nonce', !!decoyNonce && decoy.body.includes('<style nonce="' + decoyNonce + '">'))
 
   const byHeader = await call(env, '/', { headers: bearer(SUB_TOKEN) })
   eq('Authorization 头可拉订阅', byHeader.status, 200)
@@ -802,7 +806,10 @@ group('安全加固')
     body: JSON.stringify({ username: 'guard' + (++seq), password }),
   })
   eq('11 位口令被拒', (await create('x'.repeat(11))).status, 400)
-  eq('12 位口令通过', (await create('x'.repeat(12))).status, 200)
+  eq('12 位单字符重复口令被拒', (await create('x'.repeat(12))).status, 400)
+  eq('12 位正常口令通过', (await create('Qv7#tR2$wLp9')).status, 200)
+  eq('常见弱口令被拒', (await create('password1234')).status, 400)
+  eq('键盘序列口令被拒', (await create('qwertyuiop12')).status, 400)
 
   const weak = makeEnv({ AUTH_TOKEN: 'short-token' })
   check('过短的 AUTH_TOKEN 被忽略', (await call(weak, '/?token=short-token')).contentType.startsWith('text/html'))
@@ -813,6 +820,88 @@ group('安全加固')
   const stored = JSON.parse(strong.data.get('users'))
   eq('PASSWORD_ITERATIONS 写入新账号', stored.users[0].passwordIterations, 20000)
   eq('提高迭代后仍能登录', (await login(strong)).status, 200)
+}
+
+group('令牌与会话加固')
+{
+  const env = makeEnv()
+  const token = await initConsole(env)
+  await putConfig(env, token, { rev: 0, nodes: [ssNode({ id: 'n_a', name: 'A-01' })], authToken: SUB_TOKEN })
+
+  // 形态不符的 Bearer 必须在读 KV 之前被拒，否则未鉴权请求能放大成 KV 读
+  let kvReads = 0
+  const originalGet = env.SUB_KV.get
+  env.SUB_KV.get = async key => { kvReads += 1; return originalGet(key) }
+  eq('畸形会话令牌返回 401', (await call(env, '/api/config', { headers: bearer('plain-token-without-dot') })).status, 401)
+  eq('畸形会话令牌不读 KV', kvReads, 0)
+  eq('超长会话令牌返回 401', (await call(env, '/api/config', { headers: bearer('a'.repeat(600) + '.' + 'b'.repeat(600)) })).status, 401)
+  eq('超长会话令牌不读 KV', kvReads, 0)
+  env.SUB_KV.get = originalGet
+
+  const users = (await call(env, '/api/users', { headers: bearer(token) })).body
+  await call(env, '/api/users', {
+    method: 'POST',
+    headers: { ...bearer(token), 'content-type': 'application/json' },
+    body: JSON.stringify({
+      rev: users.rev,
+      username: 'subscriber',
+      password: 'Subscriber-99',
+      role: 'member',
+      scope: { allNodes: true },
+    }),
+  })
+  const memberToken = (await login(env, 'subscriber', 'Subscriber-99')).body.token
+  const memberCfg = (await getConfig(env, memberToken)).body
+  const memberSub = new URL(memberCfg.meta.subUrl).searchParams.get('token')
+  check('成员订阅令牌带账号定位段', /^sub_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(memberSub), memberSub)
+  eq('新格式订阅令牌可拉取', (await call(env, '/?token=' + encodeURIComponent(memberSub))).status, 200)
+  const forged = 'sub_' + Buffer.from('u_does-not-exist').toString('base64url') + '.' + 'A'.repeat(43)
+  check('伪造账号段拿不到订阅', (await call(env, '/?token=' + encodeURIComponent(forged))).contentType.startsWith('text/html'))
+  const legacy = 'sub_' + 'B'.repeat(43)
+  check('旧格式订阅令牌不会误判通过', (await call(env, '/?token=' + encodeURIComponent(legacy))).contentType.startsWith('text/html'))
+
+  const hashBase = await putConfig(env, token, {
+    rev: await currentRev(env, token),
+    nodes: [ssNode({ id: 'n_a', name: 'A-01' })],
+    providerBase: 'https://cdn.example.com/rules#frag',
+  })
+  eq('镜像地址含 # 被拒', hashBase.status, 400)
+
+  const zeroWidth = await putConfig(env, token, {
+    rev: await currentRev(env, token),
+    nodes: [ssNode({ id: 'n_a', name: 'A-01\u200b' })],
+  })
+  eq('节点名含零宽字符被拒', zeroWidth.status, 400)
+
+  const hugeStream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('{"username":"x","password":"' + 'a'.repeat(64) + '","pad":"'))
+      controller.enqueue(new Uint8Array(300 * 1024).fill(97))
+      controller.enqueue(new TextEncoder().encode('"}'))
+      controller.close()
+    },
+  })
+  const huge = await call(env, '/api/setup', { method: 'POST', body: hugeStream, duplex: 'half' })
+  eq('无 content-length 的超大请求体被 413', huge.status, 413)
+
+  const shortAdmin = makeEnv({ ADMIN_TOKEN: 'short' })
+  const authInfo = (await call(shortAdmin, '/api/auth')).body
+  check('过短的 ADMIN_TOKEN 被忽略', authInfo.recovery === false && authInfo.setupLocked === false, JSON.stringify(authInfo))
+
+  const ttlEnv = makeEnv()
+  ttlEnv.SESSION_TTL_HOURS = '1'
+  await asAdmin(ttlEnv)
+  const ttlToken = (await login(ttlEnv)).body.token
+  const ttlPayload = JSON.parse(Buffer.from(ttlToken.split('.')[0], 'base64url').toString())
+  eq('SESSION_TTL_HOURS 生效', ttlPayload.exp - ttlPayload.iat, 3600)
+
+  const secEnv = makeEnv()
+  const beforeSecret = await initConsole(secEnv)
+  eq('未配置 SESSION_SECRET 时会话可用', (await getConfig(secEnv, beforeSecret)).status, 200)
+  secEnv.SESSION_SECRET = 'k'.repeat(40)
+  eq('配置 SESSION_SECRET 后旧会话立即失效', (await getConfig(secEnv, beforeSecret)).status, 401)
+  const afterSecret = (await login(secEnv)).body.token
+  eq('配置 SESSION_SECRET 后可正常登录', (await getConfig(secEnv, afterSecret)).status, 200)
 }
 
 /* ================= 收尾 ================= */

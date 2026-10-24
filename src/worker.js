@@ -22,7 +22,6 @@ const PASSWORD_MAX = 128
 // Workers Free 只有 10ms CPU，默认 1 万次；付费计划可用 PASSWORD_ITERATIONS 提高（上限 20 万）
 const PASSWORD_ITERATIONS = 10000
 const PASSWORD_ITERATIONS_MAX = 200000
-const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 
 const MAIN_GROUP = '🌍选择节点'
 const RESERVED_NAMES = new Set([
@@ -103,7 +102,7 @@ async function handleRequest(request, env) {
 
   try {
     if (path.startsWith('/api/')) {
-      const limited = checkApiRateLimit(request)
+      const limited = await checkApiRateLimit(request, env)
       if (limited) return limited
       return await handleApi(request, url, path, env)
     }
@@ -117,13 +116,13 @@ async function handleRequest(request, env) {
     }
     const token = subscriptionToken(request, url)
     if (token) {
-      const limited = checkSubRateLimit(request)
+      const limited = await checkSubRateLimit(request, env)
       if (limited) return limited
       const access = await subscriptionAccess(env, token)
       if (access) return await serveSubscription(env, access.config, headOnly)
     }
     // 无令牌路径同样限流：伪装页每次都要拼整页 HTML，不能成为免费刷 CPU 的入口
-    const decoyLimited = checkSubRateLimit(request)
+    const decoyLimited = await checkSubRateLimit(request, env)
     if (decoyLimited) return decoyLimited
     return renderDecoy(request, headOnly)
   } catch (err) {
@@ -160,9 +159,23 @@ function authToken(env) {
   return token
 }
 
+/* 部署恢复令牌是「绕过登录直接拿所有者权限」的凭据，短到能被爆破就等于没有密码。
+   与 AUTH_TOKEN 同一套形态规则：过短 / 含空白 / 含控制字符一律按「未配置」处理，
+   只提示一次，避免每个请求都刷日志。 */
+let warnedWeakAdminToken = false
 function dedicatedAdminToken(env) {
   const value = env && env.ADMIN_TOKEN
-  return typeof value === 'string' && value.length > 0 ? value : ''
+  if (typeof value !== 'string') return ''
+  const token = value.trim()
+  if (!token) return ''
+  if (token.length < ADMIN_TOKEN_MIN || token.length > AUTH_TOKEN_MAX || /[\s\u0000-\u001f\u007f]/.test(token)) {
+    if (!warnedWeakAdminToken) {
+      warnedWeakAdminToken = true
+      console.warn(`ADMIN_TOKEN 需为 ${ADMIN_TOKEN_MIN}-${AUTH_TOKEN_MAX} 位且不含空白，当前值已忽略，恢复通道不可用`)
+    }
+    return ''
+  }
+  return token
 }
 
 function effectiveAuthToken(config, env) {
@@ -232,15 +245,45 @@ function validateUsername(value) {
   if (!USERNAME_RE.test(username)) {
     throw new HttpError(400, '用户名需为 3–254 位（字母、数字或 . _ + @ -），也可以直接填写邮箱地址', 'username')
   }
+  // 用户名会显示在账号列表里，零宽 / 双向控制符可以把它伪装成另一个账号
+  if (FORMAT_CHARS_RE.test(username)) throw new HttpError(400, '用户名不能包含不可见控制字符', 'username')
   return username
 }
 
-function validatePassword(value) {
+/* 只挡「必然被秒破」的口令，不强制字符类别：
+   12 位以上的长口令短语（全小写或全字母）本来就更安全，不该被规则逼成 Passw0rd! 这类模式。 */
+const WEAK_PASSWORDS = new Set([
+  'password1234', 'password12345', 'password123456', 'passw0rd1234',
+  '123456789012', '1234567890123', '12345678901234', '111111111111',
+  'qwertyuiop12', 'qwertyuiop123', 'qwerty123456', 'asdfghjkl123',
+  'administrator', 'administrator1', 'letmein12345', 'iloveyou12345',
+  'welcome12345', 'changeme1234', 'admin1234567', 'abc123456789',
+])
+const KEYBOARD_RUNS = ['0123456789', '9876543210', 'abcdefghijklmnopqrstuvwxyz', 'zyxwvutsrqponmlkjihgfedcba', 'qwertyuiop', 'asdfghjkl', 'zxcvbnm']
+
+function weakPasswordReason(password, username) {
+  const lower = password.toLowerCase()
+  if (WEAK_PASSWORDS.has(lower)) return '该密码在常见弱口令列表中，请换一个'
+  // 单一 / 双字符重复：aaaaaaaaaaaa、abababababab
+  if (new Set(lower).size <= 2) return '密码字符过于单一，请混合更多不同字符'
+  // 去掉分隔符后整体落在键盘序列 / 数字序列里
+  const compact = lower.replace(/[\s._-]/g, '')
+  if (compact && KEYBOARD_RUNS.some(run => run.includes(compact))) {
+    return '密码是连续序列（如 123456789 / qwerty），请换一个'
+  }
+  const name = String(username || '').toLowerCase().split('@')[0]
+  if (name.length >= 3 && lower === name) return '密码不能与用户名相同'
+  return ''
+}
+
+function validatePassword(value, username) {
   if (typeof value !== 'string' || !value) throw new HttpError(400, '密码不能为空', 'password')
   if (value.length < PASSWORD_MIN) throw new HttpError(400, `密码至少需要 ${PASSWORD_MIN} 个字符`, 'password')
   if (value.length > PASSWORD_MAX) throw new HttpError(400, `密码不能超过 ${PASSWORD_MAX} 个字符`, 'password')
   if (!value.trim()) throw new HttpError(400, '密码不能全部为空格', 'password')
   if (/[\u0000-\u001f\u007f]/.test(value)) throw new HttpError(400, '密码不能包含控制字符', 'password')
+  const reason = weakPasswordReason(value, username)
+  if (reason) throw new HttpError(400, reason, 'password')
   return value
 }
 
@@ -311,10 +354,20 @@ async function dummyPasswordCheck(password, iterations = PASSWORD_ITERATIONS) {
   return false
 }
 
+/* KV 里的 secret 是 base64url；环境变量 SESSION_SECRET 是普通字符串，
+   两者不能走同一个 importKey（atob 会拒绝非 base64 字符）。 */
 async function hmacSign(secret, value) {
+  return await hmacSignBytes(base64UrlToBytes(secret), value)
+}
+
+async function hmacSignText(textSecret, value) {
+  return await hmacSignBytes(new TextEncoder().encode(textSecret), value)
+}
+
+async function hmacSignBytes(keyBytes, value) {
   const key = await crypto.subtle.importKey(
     'raw',
-    base64UrlToBytes(secret),
+    keyBytes,
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign']
@@ -323,22 +376,52 @@ async function hmacSign(secret, value) {
   return new Uint8Array(signature)
 }
 
-async function createSessionToken(user, secret) {
+/* 会话签名密钥：优先用环境变量 SESSION_SECRET，这样即使 KV 被读走也无法伪造会话
+   （KV 里的 secret 只用于派生成员订阅令牌）。未配置时回落到 KV 内的随机 secret，
+   保持零配置可用；配置了但不合格则告警并回落，不会让控制台直接不可用。 */
+let warnedWeakSessionSecret = false
+function sessionKey(store, env) {
+  const raw = env && env.SESSION_SECRET
+  if (typeof raw === 'string') {
+    const value = raw.trim()
+    if (value.length >= 32 && value.length <= 256 && !/[\s\u0000-\u001f\u007f]/.test(value)) {
+      return { kind: 'env', value }
+    }
+    if (value && !warnedWeakSessionSecret) {
+      warnedWeakSessionSecret = true
+      console.warn('SESSION_SECRET 需为 32-256 位且不含空白，当前值已忽略，回落到 KV 内的会话密钥')
+    }
+  }
+  return { kind: 'kv', value: store.secret }
+}
+
+async function signSession(key, value) {
+  return key.kind === 'env' ? await hmacSignText(key.value, value) : await hmacSign(key.value, value)
+}
+
+function sessionTtlSeconds(env) {
+  const raw = Number(env && env.SESSION_TTL_HOURS)
+  if (!Number.isFinite(raw) || raw < SESSION_TTL_HOURS_MIN) return SESSION_TTL_HOURS_DEFAULT * 3600
+  return Math.round(Math.min(raw, SESSION_TTL_HOURS_MAX) * 3600)
+}
+
+async function createSessionToken(user, key, env) {
   const now = Math.floor(Date.now() / 1000)
   const payload = {
     v: 1,
     sub: user.id,
     ver: user.version,
     iat: now,
-    exp: now + SESSION_TTL_SECONDS,
+    exp: now + sessionTtlSeconds(env),
   }
   const body = bytesToBase64Url(new TextEncoder().encode(JSON.stringify(payload)))
-  const signature = await hmacSign(secret, body)
+  const signature = await signSession(key, body)
   return `${body}.${bytesToBase64Url(signature)}`
 }
 
-async function verifySessionToken(token, secret) {
-  const parts = String(token || '').split('.')
+async function verifySessionToken(token, key) {
+  if (typeof token !== 'string' || token.length > SESSION_TOKEN_MAX) return null
+  const parts = token.split('.')
   if (parts.length !== 2 || !parts[0] || !parts[1]) return null
   let supplied
   try {
@@ -346,7 +429,8 @@ async function verifySessionToken(token, secret) {
   } catch (err) {
     return null
   }
-  const expected = await hmacSign(secret, parts[0])
+  // 先验签再解析：不能让未签名的 payload 影响任何分支
+  const expected = await signSession(key, parts[0])
   if (!bytesEqual(supplied, expected)) return null
 
   let payload
@@ -355,8 +439,16 @@ async function verifySessionToken(token, secret) {
   } catch (err) {
     return null
   }
-  if (!payload || payload.v !== 1 || typeof payload.sub !== 'string') return null
-  if (!Number.isFinite(payload.exp) || payload.exp * 1000 <= Date.now()) return null
+  if (!payload || payload.v !== 1) return null
+  if (typeof payload.sub !== 'string' || !payload.sub || payload.sub.length > 80) return null
+  if (!Number.isInteger(payload.ver) || payload.ver < 1) return null
+  if (!Number.isFinite(payload.iat) || !Number.isFinite(payload.exp)) return null
+  const now = Math.floor(Date.now() / 1000)
+  if (payload.exp <= now) return null
+  // 未来时间戳 = 时钟回拨或伪造：留 60 秒容差
+  if (payload.iat > now + 60) return null
+  // 有效期上限兜底：签名密钥泄漏后攻击者也无法签出「十年不过期」的会话
+  if (payload.exp - payload.iat > SESSION_TTL_MAX) return null
   return payload
 }
 
@@ -411,7 +503,9 @@ function validateScope(input) {
 
 function normalizeStoredUser(raw) {
   if (!raw || typeof raw !== 'object') throw new Error('invalid user')
-  if (typeof raw.id !== 'string' || !raw.id) throw new Error('invalid user id')
+  // id 会拼进 KV 键（user_nodes:<id>）与订阅令牌：只允许安全字符并限长，
+  // 避免手工写坏的 KV 记录产生超长键或带分隔符的键
+  if (typeof raw.id !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(raw.id)) throw new Error('invalid user id')
   if (typeof raw.username !== 'string' || !USERNAME_RE.test(raw.username)) throw new Error('invalid username')
   if (typeof raw.passwordSalt !== 'string' || typeof raw.passwordHash !== 'string') throw new Error('invalid password')
   if (!isDecodableBase64Url(raw.passwordSalt) || !isDecodableBase64Url(raw.passwordHash)) {
@@ -549,7 +643,8 @@ function looksLikeSessionToken(value) {
    服务端不需要额外存储，也无法从令牌反推出其他账号的链接。 */
 async function deriveSubscriptionToken(user, secret) {
   const signature = await hmacSign(secret, `sub|${user.id}|${user.version}`)
-  return 'sub_' + bytesToBase64Url(signature)
+  const idPart = bytesToBase64Url(new TextEncoder().encode(user.id))
+  return 'sub_' + idPart + '.' + bytesToBase64Url(signature)
 }
 
 function isOwner(principal) {
@@ -594,9 +689,14 @@ async function authenticateRequest(request, env) {
     }
   }
 
+  /* 形态不符的 Bearer（随手一串字符）在读 KV 之前就否掉：
+     否则每个未鉴权请求都会换来一次 KV 读 + 一次 HMAC，等于把
+     「不需要凭据」的路径变成可放大的 IO 成本。 */
+  if (supplied.length > SESSION_TOKEN_MAX || !looksLikeSessionToken(supplied)) return null
+
   const { store } = await readUsersStore(env)
   if (!store) return null
-  const payload = await verifySessionToken(supplied, store.secret)
+  const payload = await verifySessionToken(supplied, sessionKey(store, env))
   if (!payload) return null
   const user = store.users.find(item => item.id === payload.sub)
   if (!user || Number(payload.ver) !== user.version) return null
@@ -613,6 +713,34 @@ async function authenticateRequest(request, env) {
   }
 }
 
+/* 成员订阅令牌：sub_<base64url(userId)>.<签名>。
+   带上 userId 后校验只需一次 HMAC + 一次查表，不再「遍历全部账号逐个比对」——
+   未鉴权请求无法用合法前缀放大 CPU，也不再有「哪个账号匹配」的时序信号。
+   不带 userId 的旧格式（sub_<签名>）仍然接受，改密后自然轮换到新格式。 */
+async function matchSubscriptionToken(token, store) {
+  const body = token.slice('sub_'.length)
+  const dot = body.indexOf('.')
+  if (dot > 0) {
+    let userId
+    try {
+      userId = new TextDecoder().decode(base64UrlToBytes(body.slice(0, dot)))
+    } catch (err) {
+      return null
+    }
+    const user = store.users.find(item => item.id === userId)
+    if (!user) return null
+    const candidate = await deriveSubscriptionToken(user, store.secret)
+    return tokenEqual(token, candidate) ? user : null
+  }
+  // 旧格式：逐账号比较且不提前退出，保持原有的时序特征
+  let matched = null
+  for (const user of store.users) {
+    const candidate = await deriveSubscriptionToken(user, store.secret)
+    if (tokenEqual(token, candidate)) matched = user
+  }
+  return matched
+}
+
 async function subscriptionAccess(env, token) {
   // 长度先兜底：超长令牌必然无效，没必要为它读一次 KV（未鉴权请求的可控成本）
   if (typeof token !== 'string' || !token || token.length > AUTH_TOKEN_MAX) return null
@@ -623,12 +751,7 @@ async function subscriptionAccess(env, token) {
 
   const { store } = await readUsersStore(env)
   if (!store) return null
-  // 逐账号比较且不提前退出：避免通过响应时间判断令牌属于哪个账号
-  let matched = null
-  for (const user of store.users) {
-    const candidate = await deriveSubscriptionToken(user, store.secret)
-    if (tokenEqual(token, candidate)) matched = user
-  }
+  const matched = await matchSubscriptionToken(token, store)
   if (!matched) return null
   const base = filterConfigForPrincipal(config, { role: matched.role, scope: matched.scope })
   if (matched.role === 'owner') return { config: base }
@@ -656,13 +779,15 @@ function emptyConfig() {
 const PROVIDER_BASE_DEFAULT = 'https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release'
 
 /* rule-providers 的镜像前缀：允许换成自建 / 国内可达的 CDN，空值用默认。
-   只接受 https:// 开头、无空白与控制字符、无引号与反斜杠的短 URL，避免拼进 YAML 后破坏结构。 */
+   只接受 https:// 开头、无空白与控制字符、无引号与反斜杠的短 URL，避免拼进 YAML 后破坏结构。
+   `#` 会把该行后面的 `path:` / `interval:` 注释掉，`?` 之后的内容也不会参与取文件，
+   两者都只会产出坏配置，直接拒掉。 */
 function sanitizeProviderBase(input) {
   const value = typeof input === 'string' ? input.trim() : ''
   if (!value) return ''
   if (value.length > 256) return ''
-  if (/[\s\u0000-\u001f\u007f"'\\]/.test(value)) return ''
-  if (!/^https:\/\/[A-Za-z0-9._~:/?#@!$&*+,;=%-]+$/.test(value)) return ''
+  if (/[\s\u0000-\u001f\u007f"'\\#?]/.test(value)) return ''
+  if (!/^https:\/\/[A-Za-z0-9._~:/@!$&*+,;=%-]+$/.test(value)) return ''
   return value.replace(/\/+$/, '')
 }
 
@@ -692,6 +817,22 @@ function sanitizeDefaults(input) {
 const MAX_TOTAL_GB = 1048576
 const AUTH_TOKEN_MIN = 16
 const AUTH_TOKEN_MAX = 256
+const ADMIN_TOKEN_MIN = 16
+
+/* 会话有效期：默认 7 天，可用 SESSION_TTL_HOURS 缩短（1-168 小时）。
+   verifySessionToken 始终按 SESSION_TTL_MAX 兜底，因此调小配置不会让已签发的
+   旧令牌「超长有效」——它们仍然会在自己的 exp 到期后失效。 */
+const SESSION_TTL_HOURS_DEFAULT = 168
+const SESSION_TTL_HOURS_MIN = 1
+const SESSION_TTL_HOURS_MAX = 168
+const SESSION_TTL_MAX = SESSION_TTL_HOURS_MAX * 60 * 60
+
+/* 会话令牌的形态上限：payload + 签名远小于这个值，超出必然是垃圾输入 */
+const SESSION_TOKEN_MAX = 512
+
+/* 双向控制符 / 零宽字符：会让「节点名」「用户名」在界面上显示成另一串字符
+   （例如用 RLO 把 evil.com 伪装成 moc.live），除了欺骗审核者没有正当用途 */
+const FORMAT_CHARS_RE = /[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/
 
 function storedAuthToken(config) {
   const value = config && config.authToken
@@ -731,7 +872,8 @@ function sanitizeSubscription(input) {
   }
   if (typeof input.expire === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(input.expire)) {
     const time = Date.parse(`${input.expire}T23:59:59Z`)
-    if (Number.isFinite(time)) out.expire = input.expire
+    // 上限 2100 年：避免手滑写成 9999 后客户端把「到期」显示成永不过期
+    if (Number.isFinite(time) && time <= Date.UTC(2100, 11, 31)) out.expire = input.expire
   }
   return out
 }
@@ -951,6 +1093,7 @@ function hostValue(value, field, label, { required = false } = {}) {
   if (!/^[A-Za-z0-9._%:\-\[\]]+$/.test(text)) {
     throw new HttpError(400, `${label}只能包含域名、IPv4 或 IPv6 地址`, field)
   }
+  if (FORMAT_CHARS_RE.test(text)) throw new HttpError(400, `${label}包含不可见控制字符`, field)
   return text
 }
 
@@ -1063,6 +1206,9 @@ function validateNodes(input) {
     if (!raw || typeof raw !== 'object') throw new HttpError(400, `第 ${seq} 个节点数据无效`)
 
     const name = requireString(raw.name, 'name', '节点名称', 80)
+    if (FORMAT_CHARS_RE.test(name)) {
+      throw new HttpError(400, '节点名称不能包含不可见控制字符', 'name')
+    }
     if (RESERVED_NAMES.has(name)) {
       throw new HttpError(400, `节点名称「${name}」与策略组或内置策略冲突`, 'name')
     }
@@ -1261,7 +1407,7 @@ async function apiSetup(request, env) {
 
   const body = await readJsonBody(request)
   const username = validateUsername(body.username)
-  const password = validatePassword(body.password)
+  const password = validatePassword(body.password, username)
 
   const result = await readUsersStore(env)
   if (result.store) return json({ error: '控制台已完成初始化，请直接登录' }, 409)
@@ -1304,6 +1450,12 @@ async function apiSetup(request, env) {
   }
   await writeUsersStore(env, store)
 
+  /* 未配置 ADMIN_TOKEN 的公开实例，第一个打开 /admin 的人就会成为所有者；
+     初始化成功后提示一次，避免部署者误以为「已经安全」。 */
+  if (!dedicatedAdminToken(env)) {
+    console.warn('控制台已初始化，但未配置 ADMIN_TOKEN：忘记密码时没有恢复通道，建议补一个 16 位以上的随机值')
+  }
+
   // KV 没有条件写（CAS），并发初始化只能事后校验。新键的读是写后一致的，
   // 因此只有「读回来看见的正是别人刚建的那个账号」才能确定这次初始化输了，此时明确报错；
   // 读回为空（尚未同步 / 极端情况）不算失败，避免误伤正常的首次初始化。
@@ -1318,7 +1470,7 @@ async function apiSetup(request, env) {
 
   clearLoginFailures(request, '__setup__')
 
-  const token = await createSessionToken(user, store.secret)
+  const token = await createSessionToken(user, sessionKey(store, env), env)
   return json({ token, user: publicUser(user) })
 }
 
@@ -1361,7 +1513,7 @@ async function apiLogin(request, env) {
   }
   clearLoginFailures(request, username)
 
-  const token = await createSessionToken(user, store.secret)
+  const token = await createSessionToken(user, sessionKey(store, env), env)
   return json({ token, user: publicUser(user) })
 }
 
@@ -1384,7 +1536,7 @@ async function apiUsers(request, path, env, principal) {
 async function apiCreateUser(request, env, principal) {
   const body = await readJsonBody(request)
   const username = validateUsername(body.username)
-  const password = validatePassword(body.password)
+  const password = validatePassword(body.password, username)
   const role = body.role === undefined ? 'member' : body.role
   if (!ROLES.includes(role)) throw new HttpError(400, '账号角色不正确', 'role')
 
@@ -1432,7 +1584,7 @@ async function apiUpdateUser(request, env, principal) {
   // 密码留空表示不修改（账号范围 / 角色的调整不应强制所有者重设密码）
   const password = body.password === undefined || body.password === null || body.password === ''
     ? ''
-    : validatePassword(body.password)
+    : validatePassword(body.password, '')
   if (body.role !== undefined && !ROLES.includes(body.role)) {
     throw new HttpError(400, '账号角色不正确', 'role')
   }
@@ -1478,7 +1630,7 @@ async function apiUpdateUser(request, env, principal) {
 
   const response = usersResponse(next, principal)
   if (password && principal.kind === 'session' && principal.userId === id) {
-    response.token = await createSessionToken(updated, next.secret)
+    response.token = await createSessionToken(updated, sessionKey(next, env), env)
   }
   return json(response)
 }
@@ -1523,7 +1675,7 @@ async function apiChangePassword(request, env, principal) {
   }
   const body = await readJsonBody(request)
   const current = typeof body.currentPassword === 'string' ? body.currentPassword : ''
-  const nextPassword = validatePassword(body.newPassword)
+  const nextPassword = validatePassword(body.newPassword, principal.username)
 
   const limitKey = '__password__|' + principal.username
   const limited = checkLoginRateLimit(request, limitKey)
@@ -1555,16 +1707,60 @@ async function apiChangePassword(request, env, principal) {
   }
   await writeUsersStore(env, next)
 
-  const token = await createSessionToken(updated, next.secret)
+  const token = await createSessionToken(updated, sessionKey(next, env), env)
   return json({ token, user: publicUser(updated) })
+}
+
+/* 边读边计数：content-length 可以缺失，也可以故意写小，
+   只有读到超过上限时立刻取消，才不会把 100MB 请求体整块读进内存。 */
+async function readBodyLimited(request, max) {
+  const body = request.body
+  if (!body || typeof body.getReader !== 'function') {
+    const text = await request.text()
+    if (new TextEncoder().encode(text).length > max) throw new HttpError(413, '提交的数据过大')
+    return text
+  }
+
+  const reader = body.getReader()
+  const chunks = []
+  let total = 0
+  try {
+    for (;;) {
+      const step = await reader.read()
+      if (step.done) break
+      const chunk = step.value
+      total += chunk.byteLength
+      if (total > max) {
+        try {
+          await reader.cancel()
+        } catch (cancelErr) {
+          console.warn('Request body cancel failed:', cancelErr)
+        }
+        throw new HttpError(413, '提交的数据过大')
+      }
+      chunks.push(chunk)
+    }
+  } finally {
+    try {
+      reader.releaseLock()
+    } catch (releaseErr) {
+      console.warn('Request body release failed:', releaseErr)
+    }
+  }
+
+  const bytes = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return new TextDecoder().decode(bytes)
 }
 
 async function readJsonBody(request) {
   const declared = Number(request.headers.get('content-length') || 0)
   if (declared > MAX_BODY) throw new HttpError(413, '提交的数据过大')
-  const raw = await request.text()
-  // 按 UTF-8 字节数计算：raw.length 是 UTF-16 码元长度，256K 个中文字符实际约 768KB
-  if (new TextEncoder().encode(raw).length > MAX_BODY) throw new HttpError(413, '提交的数据过大')
+  const raw = await readBodyLimited(request, MAX_BODY)
 
   let body
   try {
@@ -1856,12 +2052,32 @@ function rateLimit(request, keyPrefix, max) {
   return null
 }
 
-function checkApiRateLimit(request) {
+/* Cloudflare 边缘限流（跨 isolate 生效，需在 wrangler.toml 里声明 [[ratelimits]]）。
+   内存桶按 isolate 计数，攻击者换个 isolate 就能重置；边缘限流才是真正按 IP 计的。
+   绑定缺失或调用失败一律返回 null 交给内存桶兜底——限流组件故障不能把正常请求拒掉。 */
+async function edgeRateLimit(env, bindingName, scope, request) {
+  const limiter = env && env[bindingName]
+  if (!limiter || typeof limiter.limit !== 'function') return null
+  try {
+    const verdict = await limiter.limit({ key: scope + ':' + clientIp(request) })
+    if (!verdict || verdict.success !== false) return null
+    return json({ error: '请求过于频繁，请稍后再试' }, 429, { 'retry-after': '60' })
+  } catch (err) {
+    console.error('Edge rate limiter failed, falling back to memory bucket:', err)
+    return null
+  }
+}
+
+async function checkApiRateLimit(request, env) {
+  const edge = await edgeRateLimit(env, 'RATE_LIMITER', 'api', request)
+  if (edge) return edge
   return rateLimit(request, 'api:', API_RATE_MAX)
 }
 
 /* 订阅拉取单独计数：客户端会周期性刷新，阈值放宽，仅用于挡住令牌爆破 */
-function checkSubRateLimit(request) {
+async function checkSubRateLimit(request, env) {
+  const edge = await edgeRateLimit(env, 'SUB_RATE_LIMITER', 'sub', request)
+  if (edge) return edge
   return rateLimit(request, 'sub:', SUB_RATE_MAX)
 }
 
@@ -1870,7 +2086,8 @@ function baseHeaders() {
     'x-content-type-options': 'nosniff',
     'referrer-policy': 'no-referrer',
     'x-frame-options': 'DENY',
-    'strict-transport-security': 'max-age=15552000',
+    // includeSubDomains 让自定义域名下的子域也强制 HTTPS；workers.dev 属于公共后缀，不受影响
+    'strict-transport-security': 'max-age=15552000; includeSubDomains',
   }
 }
 
@@ -1908,6 +2125,8 @@ async function serveSubscription(env, config, headOnly = false) {
     'content-type': 'text/yaml;charset=UTF-8',
     'cache-control': 'no-store, max-age=0',
     'profile-update-interval': '12',
+    // 订阅 URL 自带令牌，任何索引 / 抓取都会把它抄进第三方缓存
+    'x-robots-tag': 'noindex, nofollow, noarchive',
     ...subscriptionHeaders(config),
     'access-control-allow-origin': '*',
   }
@@ -2009,6 +2228,8 @@ function isRenderableNode(node) {
   if (typeof node.server !== 'string' || !node.server || node.server.length > 253) return false
   if (typeof node.name !== 'string' || !node.name || node.name.length > 80) return false
   if (/[\u0000-\u001f\u007f]/.test(node.name) || /[\u0000-\u001f\u007f]/.test(node.server)) return false
+  // 渲染前的最后一道：零宽 / 双向控制符会让客户端列表里出现「看着一样、其实不同」的节点名
+  if (FORMAT_CHARS_RE.test(node.name) || FORMAT_CHARS_RE.test(node.server)) return false
 
   if (node.type === 'vless' || node.type === 'vmess') {
     if (typeof node.uuid !== 'string' || !UUID_SHAPE.test(node.uuid)) return false
@@ -2201,7 +2422,7 @@ function serveAdmin(headOnly = false) {
       'content-security-policy': [
         "default-src 'none'",
         `script-src 'nonce-${nonce}'`,
-        "style-src 'unsafe-inline'",
+        `style-src 'nonce-${nonce}'`,
         "img-src 'self' data:",
         "connect-src 'self'",
         "font-src 'self'",
@@ -2226,8 +2447,10 @@ function randomNonce() {
 /* ------------------------------------------------------------------ */
 
 function decoyCsp(nonce) {
-  // default-src 'none' 已覆盖 object / worker / connect，这里只显式列出可能被放宽的指令
-  return "default-src 'none'; script-src 'nonce-" + nonce + "'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+  // default-src 'none' 已覆盖 object / worker / connect，这里只显式列出可能被放宽的指令。
+  // style 也用 nonce 而不是 'unsafe-inline'：样式内联一旦放开，CSS 选择器 + 外部 url()
+  // 就能在不执行脚本的前提下把页面里的属性值一位一位漏出去。
+  return "default-src 'none'; script-src 'nonce-" + nonce + "'; style-src 'nonce-" + nonce + "'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 }
 
 function renderDecoy(request, headOnly = false) {
@@ -2328,7 +2551,7 @@ function renderDecoy(request, headOnly = false) {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="robots" content="noindex, nofollow">
 <title>IP 地址查询</title>
-<style>
+<style nonce="${nonce}">
   :root {
     color-scheme: light;
     --bg: #f3f5fb;
