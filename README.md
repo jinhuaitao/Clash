@@ -32,6 +32,11 @@
 ---
 
 ## 部署
+### 方式一
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/jinhuaitao/Clash)
+
+### 方式二
 
 ### 1. 推到 GitHub
 
