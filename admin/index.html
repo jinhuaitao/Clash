@@ -315,38 +315,38 @@
             <svg viewBox="0 0 420 360" fill="none">
               <defs>
                 <linearGradient id="heroEdge" x1="60" y1="300" x2="360" y2="60" gradientUnits="userSpaceOnUse">
-                  <stop stop-color="#6366f1" stop-opacity=".15"/>
-                  <stop offset=".5" stop-color="#a5b4fc" stop-opacity=".75"/>
-                  <stop offset="1" stop-color="#38bdf8" stop-opacity=".25"/>
+                  <stop stop-color="#6366f1" stop-opacity=".22"/>
+                  <stop offset=".5" stop-color="#8b5cf6" stop-opacity=".8"/>
+                  <stop offset="1" stop-color="#22d3ee" stop-opacity=".38"/>
                 </linearGradient>
                 <radialGradient id="heroHalo" cx=".5" cy=".5" r=".5">
-                  <stop stop-color="#6366f1" stop-opacity=".32"/><stop offset="1" stop-color="#6366f1" stop-opacity="0"/>
+                  <stop stop-color="var(--hero-halo)" stop-opacity="1"/><stop offset="1" stop-color="var(--hero-halo)" stop-opacity="0"/>
                 </radialGradient>
               </defs>
               <circle cx="230" cy="176" r="170" fill="url(#heroHalo)"/>
-              <g stroke="rgba(165,180,252,.14)" stroke-width="1">
+              <g stroke="var(--hero-line)" stroke-width="1">
                 <circle cx="230" cy="176" r="58"/><circle cx="230" cy="176" r="108"/><circle cx="230" cy="176" r="158"/>
               </g>
-              <g stroke="rgba(165,180,252,.14)" stroke-width="1" stroke-dasharray="2 7">
+              <g stroke="var(--hero-line)" stroke-width="1" stroke-dasharray="2 7">
                 <path d="M12 296 408 56M12 176h408M58 46l344 296"/>
               </g>
               <path d="M76 278c66-22 72-104 154-102s78 84 138 28" stroke="url(#heroEdge)" stroke-width="1.6"/>
-              <path d="M76 278 230 176l138 28" stroke="rgba(165,180,252,.22)" stroke-width="1" stroke-dasharray="4 5"/>
+              <path d="M76 278 230 176l138 28" stroke="var(--hero-line-strong)" stroke-width="1" stroke-dasharray="4 5"/>
               <g>
-                <circle cx="230" cy="176" r="26" fill="rgba(99,102,241,.16)" stroke="rgba(165,180,252,.5)"/>
-                <circle cx="230" cy="176" r="9" fill="#818cf8"/>
-                <circle cx="230" cy="176" r="16" stroke="rgba(165,180,252,.5)"/>
+                <circle cx="230" cy="176" r="26" fill="var(--hero-core)" stroke="var(--hero-ring)"/>
+                <circle cx="230" cy="176" r="9" fill="var(--hero-dot)"/>
+                <circle cx="230" cy="176" r="16" stroke="var(--hero-ring)"/>
               </g>
-              <g fill="#0f1730" stroke="rgba(165,180,252,.6)">
+              <g fill="var(--hero-node-bg)" stroke="var(--hero-node-ring)">
                 <circle cx="76" cy="278" r="16"/>
                 <circle cx="368" cy="204" r="13"/>
                 <circle cx="330" cy="90" r="10"/>
                 <circle cx="112" cy="92" r="9"/>
               </g>
-              <g fill="#c7d2fe">
+              <g fill="var(--hero-dot)">
                 <circle cx="76" cy="278" r="4"/><circle cx="368" cy="204" r="3.2"/><circle cx="330" cy="90" r="2.4"/><circle cx="112" cy="92" r="2.2"/>
               </g>
-              <g fill="rgba(199,210,254,.55)" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9" letter-spacing="1.4">
+              <g fill="var(--hero-label)" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9" letter-spacing="1.4">
                 <text x="66" y="316">HKG-01</text><text x="344" y="236">NRT-02</text><text x="314" y="68">LAX-05</text><text x="94" y="70">SIN-03</text>
               </g>
             </svg>
