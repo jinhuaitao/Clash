@@ -28,7 +28,7 @@ Clash / Mihomo 订阅生成器 · 可视化管理控制台 · 零运行时依赖
 
 ```mermaid
 flowchart LR
-    C["Clash / Mihomo 客户端<br/>浏览器控制台"] -->|"HTTPS"| W["Cloudflare Worker<br/>单个文件"]
+    C["Clash / Mihomo 客户端<br/>浏览器控制台"] -->|"HTTPS"| W["Cloudflare Worker<br/>单个文件.js"]
     W -->|"读写"| K[("Cloudflare KV<br/>节点 · 账号 · 配置")]
 ```
 
@@ -109,6 +109,7 @@ npx wrangler secret put ADMIN_TOKEN   # 16 位以上的随机字符串
 | **成员** | 只看分配给自己的共享节点，可增删自己的个人节点（上限 100 个）与个人分组（上限 12 个），能自助改密 |
 
 - 每个账号有独立订阅链接 `sub_<定位段>.<签名>`，由 `secret` 与账号版本派生、不落库；改密后旧链接立即失效。
+- 成员的个人分组只影响自己的订阅：可新建、改名、排序、删除，并在组内调整个人节点顺序；共享分组只读。
 - 会话是 HMAC 签名令牌，存 `sessionStorage`，关标签页即失效；重置密码会作废该账号全部旧会话。
 - 账号上限 20 人、节点上限 300 个、分组上限 24 个，成员个人分组上限 12 个。
 - **`ADMIN_TOKEN` ≠ `AUTH_TOKEN`**：前者是恢复通道，后者只能拉订阅、不能登录控制台，别复用同一个值。

@@ -1266,7 +1266,7 @@ function normalizePersonalNodes(input) {
 /* ownerGroups 只用于个人分组的重名 / 同 id 判定：读路径拿不到时可以省略，
    mergeGroups 在合并阶段还会再挡一次，行为不会因此变得不安全。 */
 async function readPersonalNodes(env, userId, ownerGroups) {
-  const empty = { nodes: [], groups: [], rev: 0, corrupted: false }
+  const empty = { nodes: [], groups: [], regionOrder: {}, rev: 0, corrupted: false }
   if (!userId) return empty
   const kv = kvBinding(env)
   if (!kv) return empty
@@ -1286,6 +1286,7 @@ async function readPersonalNodes(env, userId, ownerGroups) {
     return {
       nodes: normalizePersonalNodes(parsed.nodes),
       groups: normalizeMemberGroups(parsed.groups, ownerGroups),
+      regionOrder: sanitizeRegionOrder(parsed.regionOrder),
       rev: Number.isFinite(parsed.rev) ? parsed.rev : 1,
       corrupted: false,
     }
@@ -1357,7 +1358,12 @@ function applyPersonal(config, personal) {
     ...config,
     groups,
     nodes,
-    regionOrder: reconcileRegionOrder(config.regionOrder, nodes, groups),
+    // 个人顺序只覆盖自己分组；共享分组的顺序仍由所有者决定
+    regionOrder: reconcileRegionOrder(
+      { ...(config.regionOrder || {}), ...((personal && personal.regionOrder) || {}) },
+      nodes,
+      groups
+    ),
   }
 }
 
@@ -1446,6 +1452,32 @@ function sanitizeRegionOrder(input) {
     })
     if (clean.length) out[id] = clean
   })
+  return out
+}
+
+/* 成员只能给自建分组排序：共享分组的顺序属于所有者，提交上来的键一律丢掉。
+   先做一次白名单过滤，再做形状清洗，避免成员借 regionOrder 影响别人的视图。 */
+function sanitizeMemberRegionOrder(input, ownGroupIds) {
+  const out = {}
+  if (!input || typeof input !== 'object' || !ownGroupIds || !ownGroupIds.size) return out
+  let keys = 0
+  for (const id of Object.keys(input)) {
+    if (!ownGroupIds.has(id) || keys >= MAX_MEMBER_GROUPS) continue
+    const arr = input[id]
+    if (!Array.isArray(arr)) continue
+    const seen = new Set()
+    const clean = []
+    arr.forEach(nodeId => {
+      if (typeof nodeId === 'string' && nodeId && !seen.has(nodeId)) {
+        seen.add(nodeId)
+        clean.push(nodeId)
+      }
+    })
+    if (clean.length) {
+      out[id] = clean
+      keys += 1
+    }
+  }
   return out
 }
 
@@ -2222,6 +2254,10 @@ async function apiSavePersonalNodes(request, url, env, principal) {
     ? validateMemberGroups(body.groups, ownerGroups)
     : current.groups
   const allGroups = mergeGroups(ownerGroups, groups)
+  const ownGroupIds = new Set(groups.map(group => group.id))
+  const regionOrder = body.regionOrder !== undefined
+    ? sanitizeMemberRegionOrder(body.regionOrder, ownGroupIds)
+    : (current.regionOrder || {})
   const nodes = validateNodes(body.nodes, { groups: allGroups })
   const adminIds = new Set(admin.config.nodes.map(node => node.id))
   const usedIds = new Set()
@@ -2252,6 +2288,7 @@ async function apiSavePersonalNodes(request, url, env, principal) {
     updatedAt: new Date().toISOString(),
     nodes: prepared,
     groups,
+    regionOrder,
   }
   await writePersonalNodes(env, principal.userId, next)
 
@@ -2259,7 +2296,11 @@ async function apiSavePersonalNodes(request, url, env, principal) {
     ...filtered,
     groups: allGroups,
     nodes: mergedNodes,
-    regionOrder: reconcileRegionOrder(filtered.regionOrder, mergedNodes, allGroups),
+    regionOrder: reconcileRegionOrder(
+      { ...(filtered.regionOrder || {}), ...regionOrder },
+      mergedNodes,
+      allGroups
+    ),
   }
   return json({
     config: publicConfig(merged),

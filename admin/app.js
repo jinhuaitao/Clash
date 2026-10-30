@@ -1501,7 +1501,10 @@
     if (shared) badges += '<span class="mini-badge" title="由所有者分配，成员不能修改">共享</span>';
 
     var moveHtml = '';
-    if (sortable && isOwner()) {
+    // 成员只能给「自己分组」里的个人节点排序：共享分组的顺序属于所有者
+    var canSort = sortable && (isOwner() ||
+      (personal && isGroupFilter(state.filterGroup) && isOwnGroup(state.filterGroup)));
+    if (canSort) {
       moveHtml =
         '<button class="icon-btn move-btn" type="button" data-move-id="' + esc(node.id) + '" data-dir="-1" title="上移" aria-label="上移节点"' + (index === 0 ? ' disabled' : '') + '>' + icon('arrow-up') + '</button>' +
         '<button class="icon-btn move-btn" type="button" data-move-id="' + esc(node.id) + '" data-dir="1" title="下移" aria-label="下移节点"' + (index === total - 1 ? ' disabled' : '') + '>' + icon('arrow-down') + '</button>';
@@ -1592,7 +1595,9 @@
             '<span class="group-name">' + esc(group.name) + '</span>' +
             badge +
           '</div>' +
-          '<div class="group-sub">' + members.length + ' 个节点 · ' + active + ' 个已启用' +
+          '<div class="group-sub">' + (members.length
+            ? members.length + ' 个节点 · ' + active + ' 个已启用'
+            : '还没有节点 · 加入节点后才会写入订阅') +
             (mine ? '' : ' · 由所有者维护') + '</div>' +
         '</div>' +
         actions +
@@ -1614,7 +1619,12 @@
     if (el.groupSummary) {
       el.groupSummary.textContent = owner
         ? list.length + ' 个分组 · ' + all.length + ' 个节点'
-        : own.length + ' 个自定义分组 · ' + (list.length - own.length) + ' 个共享分组';
+        : own.length + ' 个自定义分组（上限 ' + groupLimit() + '） · ' + (list.length - own.length) + ' 个共享分组';
+    }
+    if (el.groupAdd) {
+      var maxed = own.length >= groupLimit();
+      el.groupAdd.disabled = maxed;
+      el.groupAdd.title = maxed ? '分组数量已达上限 ' + groupLimit() + ' 个' : '';
     }
     if (el.groupsSub) {
       el.groupsSub.textContent = owner
@@ -2141,7 +2151,10 @@
   }
 
   async function moveNode(id, dir, button) {
-    if (!isOwner() || !ensureWritable() || state.mutating) return;
+    if (!ensureWritable() || state.mutating) return;
+    // 成员没有全局顺序可改，只能在自己的分组里调序
+    var ownGroupScope = isGroupFilter(state.filterGroup) && isOwnGroup(state.filterGroup);
+    if (!isOwner() && !ownGroupScope) return;
     var view = viewNodes();
     var viewIndex = view.findIndex(function (node) { return node.id === id; });
     var viewTarget = viewIndex + dir;
@@ -2533,8 +2546,10 @@
     if (el.accountUsername) el.accountUsername.value = meta.username || '';
     if (el.accountRole) el.accountRole.textContent = isOwner() ? '所有者' : '成员';
     if (el.accountScope) {
+      var groupCount = Number(meta.personalGroupCount) || 0;
       el.accountScope.value = (scope.allNodes ? '全部共享节点' : '已分配共享节点') +
-        '（' + sharedCount + ' 个） · 个人节点（' + personalCount + ' 个）';
+        '（' + sharedCount + ' 个） · 个人节点（' + personalCount + ' 个）' +
+        ' · 个人分组（' + groupCount + ' 个）';
     }
     if (el.accountSubUrl) {
       el.accountSubUrl.value = meta.subUrl ? maskToken(meta.subUrl) : '';
@@ -3049,10 +3064,11 @@
           ? opts.groups
           : opts.groups.filter(function (group) { return isOwnGroup(group.id) || /^mg_/.test(group.id); });
       }
+      // 成员提交的 regionOrder 只保留自建分组的键，服务端会再过滤一次
+      if (opts.regionOrder) body.regionOrder = opts.regionOrder;
       if (owner) {
         if (opts.defaults) body.defaults = opts.defaults;
         if (opts.subscription) body.subscription = opts.subscription;
-        if (opts.regionOrder) body.regionOrder = opts.regionOrder;
         if (opts.providerBase !== undefined) body.providerBase = opts.providerBase;
       }
       var data = await request(owner ? '/api/config' : '/api/nodes', {

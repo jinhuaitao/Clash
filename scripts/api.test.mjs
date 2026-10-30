@@ -918,6 +918,74 @@ group('成员个人分组')
   check('空名分组不会进入配置', !recovered.body.config.groups.some(g => g.id === 'bad'))
 }
 
+group('成员分组内排序')
+{
+  const env = makeEnv()
+  const ownerToken = await initConsole(env)
+  await putConfig(env, ownerToken, { rev: 0, nodes: fullNodes(), authToken: SUB_TOKEN })
+
+  const users = (await call(env, '/api/users', { headers: bearer(ownerToken) })).body
+  await call(env, '/api/users', {
+    method: 'POST',
+    headers: { ...bearer(ownerToken), 'content-type': 'application/json' },
+    body: JSON.stringify({
+      rev: users.rev,
+      username: 'sorter',
+      password: 'Sorter-Pass-1',
+      role: 'member',
+      scope: { allNodes: true, nodeIds: [] },
+    }),
+  })
+  const memberToken = (await login(env, 'sorter', 'Sorter-Pass-1')).body.token
+  const putPersonal = payload => call(env, '/api/nodes', {
+    method: 'PUT',
+    headers: { ...bearer(memberToken), 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+
+  const nodes = ['a', 'b', 'c'].map(ch => ({
+    ...ssNode(),
+    id: 'p_s' + ch,
+    name: 'SORT-' + ch.toUpperCase(),
+    server: 'sort-' + ch + '.example.net',
+    groupId: 'mg_sort',
+  }))
+  const first = await putPersonal({ rev: 0, groups: [{ id: 'mg_sort', name: '🔀 排序组' }], nodes })
+  eq('成员保存排序组 200', first.status, 200)
+
+  const ordered = await putPersonal({
+    rev: 1,
+    groups: [{ id: 'mg_sort', name: '🔀 排序组' }],
+    nodes,
+    regionOrder: { mg_sort: ['p_sc', 'p_sa', 'p_sb'], hk: ['n_hk2', 'n_hk1'] },
+  })
+  eq('保存组内顺序 200', ordered.status, 200)
+  eq('自建分组顺序被保留', (ordered.body.config.regionOrder.mg_sort || []).join(','), 'p_sc,p_sa,p_sb')
+  check('共享分组顺序不接受成员写入',
+    (ordered.body.config.regionOrder.hk || []).join(',') !== 'n_hk2,n_hk1',
+    JSON.stringify(ordered.body.config.regionOrder))
+
+  const cfg = await getConfig(env, memberToken)
+  const sub = new URL(cfg.body.meta.subUrl).searchParams.get('token')
+  const yaml = await call(env, '/?token=' + encodeURIComponent(sub))
+  const bucket = yaml.body.split('- name: "🔀 排序组"')[1].split('- name:')[0]
+  const posC = bucket.indexOf('"SORT-C"')
+  const posA = bucket.indexOf('"SORT-A"')
+  const posB = bucket.indexOf('"SORT-B"')
+  check('策略组按自定义顺序输出', posC > -1 && posC < posA && posA < posB, [posC, posA, posB].join(','))
+
+  const dropped = await putPersonal({
+    rev: 2,
+    groups: [],
+    nodes,
+    regionOrder: { mg_sort: ['p_sc', 'p_sa', 'p_sb'] },
+  })
+  eq('删除分组时清掉其顺序表', dropped.status, 200)
+  check('已删分组的顺序不会残留',
+    !Object.prototype.hasOwnProperty.call(dropped.body.config.regionOrder, 'mg_sort'),
+    JSON.stringify(dropped.body.config.regionOrder))
+}
+
 group('旧账号库迁移')
 {
   const env = makeEnv()
