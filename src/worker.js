@@ -14,6 +14,11 @@ const MAX_USERS = 20
    只在该成员的配置、预览与订阅链接里合并展现 */
 const PERSONAL_KEY_PREFIX = 'user_nodes:'
 const MAX_PERSONAL_NODES = 100
+/* 成员的个人分组和「未分组」一样，只在自己的订阅里生效。
+   单独给一个上限：共享分组已经占掉一部分策略组名额，成员侧不需要再开到 24 个。
+   id 统一用 mg_ 前缀，和所有者的内置组 / g_ 自定义组天然隔开。 */
+const MAX_MEMBER_GROUPS = 12
+const MEMBER_GROUP_ID_RE = /^mg_[A-Za-z0-9_-]{1,61}$/
 const PERSONAL_ID_RE = /^p_[A-Za-z0-9_-]{1,62}$/
 const USERNAME_RE = /^[A-Za-z0-9][A-Za-z0-9._+@-]{2,253}$/
 const USERNAME_MAX = 254
@@ -812,11 +817,9 @@ async function subscriptionAccess(env, token) {
   if (!matched) return null
   const base = filterConfigForPrincipal(config, { role: matched.role, scope: matched.scope })
   if (matched.role === 'owner') return { config: base }
-  const personal = await readPersonalNodes(env, matched.id)
+  const personal = await readPersonalNodes(env, matched.id, resolveGroups(config))
   return {
-    config: personal.nodes.length
-      ? { ...base, nodes: mergePersonalNodes(base.nodes, personal.nodes) }
-      : base,
+    config: personal.nodes.length || personal.groups.length ? applyPersonal(base, personal) : base,
   }
 }
 
@@ -975,6 +978,87 @@ function validateGroups(input) {
     ids.add(id)
     out.push({ id, name, icon: validateGroupIcon(raw.icon) })
   })
+  return out
+}
+
+/* 成员分组：只存在于 user_nodes:<id> 里，和共享分组合并后进入该成员的订阅。
+   写路径和所有者分组一样严格：名称必填、不重名、不占用内置策略名，
+   另外还不能与共享分组重名 —— 两组合并后同名策略组会让整份 YAML 失效。 */
+function validateMemberGroups(input, ownerGroups) {
+  if (!Array.isArray(input)) throw new HttpError(400, '分组数据格式不正确', 'groups')
+  if (input.length > MAX_MEMBER_GROUPS) {
+    throw new HttpError(400, `个人分组数量不能超过 ${MAX_MEMBER_GROUPS} 个`, 'groups')
+  }
+  const ownerIds = new Set((ownerGroups || []).map(group => group.id))
+  const ownerNames = new Set((ownerGroups || []).map(group => group.name.toLowerCase()))
+  const out = []
+  const ids = new Set()
+  const names = new Set()
+  input.forEach((raw, index) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      throw new HttpError(400, `第 ${index + 1} 个分组数据无效`, 'groups')
+    }
+    const name = requireString(raw.name, 'groupName', '分组名称', GROUP_NAME_MAX)
+    if (FORMAT_CHARS_RE.test(name)) throw new HttpError(400, '分组名称不能包含不可见控制字符', 'groupName')
+    if (RESERVED_GROUP_NAMES.has(name)) {
+      throw new HttpError(400, `分组名称「${name}」与内置策略或应用策略组冲突`, 'groupName')
+    }
+    const nameKey = name.toLowerCase()
+    if (ownerNames.has(nameKey)) {
+      throw new HttpError(400, `分组名称「${name}」与共享分组重复`, 'groupName')
+    }
+    if (names.has(nameKey)) throw new HttpError(400, `分组名称「${name}」重复`, 'groupName')
+    names.add(nameKey)
+    let id = typeof raw.id === 'string' && MEMBER_GROUP_ID_RE.test(raw.id) ? raw.id : ''
+    if (!id || ids.has(id) || ownerIds.has(id)) {
+      do { id = 'mg_' + crypto.randomUUID() } while (ids.has(id) || ownerIds.has(id))
+    }
+    ids.add(id)
+    out.push({ id, name, icon: validateGroupIcon(raw.icon) })
+  })
+  return out
+}
+
+/* 读路径宽松：坏项逐条丢弃，不抛错。与共享分组同名 / 同 id 的个人分组直接忽略，
+   避免手工改过的 KV 把两份同名策略组拼进同一份订阅。 */
+function normalizeMemberGroups(input, ownerGroups) {
+  if (!Array.isArray(input)) return []
+  const ownerIds = new Set((ownerGroups || []).map(group => group.id))
+  const ownerNames = new Set((ownerGroups || []).map(group => group.name.toLowerCase()))
+  const out = []
+  const ids = new Set()
+  const names = new Set()
+  for (const raw of input.slice(0, MAX_MEMBER_GROUPS)) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue
+    if (typeof raw.id !== 'string' || !GROUP_ID_RE.test(raw.id) || ids.has(raw.id) || ownerIds.has(raw.id)) continue
+    if (typeof raw.name !== 'string') continue
+    const name = raw.name.trim()
+    if (!name || name.length > GROUP_NAME_MAX) continue
+    if (/[\u0000-\u001f\u007f]/.test(name) || FORMAT_CHARS_RE.test(name)) continue
+    if (RESERVED_GROUP_NAMES.has(name)) continue
+    const nameKey = name.toLowerCase()
+    if (names.has(nameKey) || ownerNames.has(nameKey)) continue
+    ids.add(raw.id)
+    names.add(nameKey)
+    out.push({ id: raw.id, name, icon: sanitizeGroupIcon(raw.icon) })
+  }
+  return out
+}
+
+/* 共享分组在前，个人分组在后：所有者调整顺序时成员侧跟着变，
+   成员自己的分组顺序则只由他自己决定。 */
+function mergeGroups(baseGroups, extraGroups) {
+  if (!Array.isArray(extraGroups) || !extraGroups.length) return baseGroups
+  const ids = new Set(baseGroups.map(group => group.id))
+  const names = new Set(baseGroups.map(group => group.name.toLowerCase()))
+  const out = baseGroups.slice()
+  for (const group of extraGroups) {
+    const nameKey = group.name.toLowerCase()
+    if (ids.has(group.id) || names.has(nameKey)) continue
+    ids.add(group.id)
+    names.add(nameKey)
+    out.push(group)
+  }
   return out
 }
 
@@ -1179,8 +1263,10 @@ function normalizePersonalNodes(input) {
   return out
 }
 
-async function readPersonalNodes(env, userId) {
-  const empty = { nodes: [], rev: 0, corrupted: false }
+/* ownerGroups 只用于个人分组的重名 / 同 id 判定：读路径拿不到时可以省略，
+   mergeGroups 在合并阶段还会再挡一次，行为不会因此变得不安全。 */
+async function readPersonalNodes(env, userId, ownerGroups) {
+  const empty = { nodes: [], groups: [], rev: 0, corrupted: false }
   if (!userId) return empty
   const kv = kvBinding(env)
   if (!kv) return empty
@@ -1199,6 +1285,7 @@ async function readPersonalNodes(env, userId) {
     if (!parsed || !Array.isArray(parsed.nodes)) throw new Error('invalid personal node store')
     return {
       nodes: normalizePersonalNodes(parsed.nodes),
+      groups: normalizeMemberGroups(parsed.groups, ownerGroups),
       rev: Number.isFinite(parsed.rev) ? parsed.rev : 1,
       corrupted: false,
     }
@@ -1258,17 +1345,30 @@ function mergePersonalNodes(baseNodes, personalNodes) {
   return baseNodes.concat(merged)
 }
 
+/* 个人节点与个人分组合并进成员视图：三处读路径（配置 / 预览 / 订阅）共用，
+   避免「控制台看得到、订阅里没有」这类漂移。 */
+function applyPersonal(config, personal) {
+  const groups = mergeGroups(
+    Array.isArray(config.groups) && config.groups.length ? config.groups : defaultGroups(),
+    personal && personal.groups
+  )
+  const nodes = mergePersonalNodes(config.nodes, (personal && personal.nodes) || [])
+  return {
+    ...config,
+    groups,
+    nodes,
+    regionOrder: reconcileRegionOrder(config.regionOrder, nodes, groups),
+  }
+}
+
 /* 成员的可用节点 = 管理员分配的节点 + 自己的个人节点。
    所有读路径（配置、预览、订阅）都走这里，避免三处行为漂移。 */
 async function configForPrincipal(env, config, principal) {
   const filtered = filterConfigForPrincipal(config, principal)
   if (!principal || isOwner(principal) || !principal.userId) return { config: filtered, personal: null }
-  const personal = await readPersonalNodes(env, principal.userId)
-  if (!personal.nodes.length) return { config: filtered, personal }
-  return {
-    config: { ...filtered, nodes: mergePersonalNodes(filtered.nodes, personal.nodes) },
-    personal,
-  }
+  const personal = await readPersonalNodes(env, principal.userId, resolveGroups(config))
+  if (!personal.nodes.length && !personal.groups.length) return { config: filtered, personal }
+  return { config: applyPersonal(filtered, personal), personal }
 }
 
 /* ------------------------------------------------------------------ */
@@ -2095,8 +2195,8 @@ async function apiSave(request, url, env, principal) {
   })
 }
 
-/* 成员的节点写路径：只接受个人节点，全部落到 user_nodes:<userId>，
-   管理员配置的 rev / updatedAt / nodes 都不会被触碰。
+/* 成员的写路径：只接受个人节点与个人分组，全部落到 user_nodes:<userId>，
+   管理员配置的 rev / updatedAt / nodes / groups 都不会被触碰。
    提交里混入的 n_ 节点 id 一律重写为 p_，因此无法借保存覆盖已分配节点。 */
 async function apiSavePersonalNodes(request, url, env, principal) {
   if (isOwner(principal)) throw new HttpError(400, '所有者请通过配置接口保存节点')
@@ -2110,12 +2210,19 @@ async function apiSavePersonalNodes(request, url, env, principal) {
 
   const admin = await readConfig(env)
   if (admin.readonly) throw new HttpError(503, '尚未绑定 KV 存储，无法保存')
-  const current = await readPersonalNodes(env, principal.userId)
+  const ownerGroups = resolveGroups(admin.config)
+  const current = await readPersonalNodes(env, principal.userId, ownerGroups)
   if (body.rev !== undefined && body.rev !== null && Number(body.rev) !== current.rev) {
     return json({ error: '个人节点已在其他窗口更新，请刷新后重试', rev: current.rev }, 409)
   }
 
-  const nodes = validateNodes(body.nodes, { groups: resolveGroups(admin.config) })
+  /* 分组先校验，节点才能按「共享分组 + 个人分组」的合并表归一 groupId。
+     没传 groups 时沿用已存的分组，旧版前端因此不需要同步改造。 */
+  const groups = body.groups !== undefined
+    ? validateMemberGroups(body.groups, ownerGroups)
+    : current.groups
+  const allGroups = mergeGroups(ownerGroups, groups)
+  const nodes = validateNodes(body.nodes, { groups: allGroups })
   const adminIds = new Set(admin.config.nodes.map(node => node.id))
   const usedIds = new Set()
   const prepared = nodes.map(node => {
@@ -2129,16 +2236,31 @@ async function apiSavePersonalNodes(request, url, env, principal) {
     return id === node.id ? node : { ...node, id }
   })
 
+  const filtered = filterConfigForPrincipal(admin.config, principal)
+  const mergedNodes = mergePersonalNodes(filtered.nodes, prepared)
+  /* validateNodes 只比对个人节点与全部分组；共享节点是所有者写的，
+     这里补一次「个人分组 vs 共享节点」的同名检查，避免 YAML 里策略组与 proxy 撞名。 */
+  const memberNames = new Set(groups.map(group => group.name.toLowerCase()))
+  const clash = mergedNodes.find(node => memberNames.has(node.name.toLowerCase()))
+  if (clash) {
+    throw new HttpError(400, `分组名称「${clash.name}」与节点同名，客户端会解析失败`, 'groupName')
+  }
+
   const next = {
     v: 1,
     rev: (current.rev || 0) + 1,
     updatedAt: new Date().toISOString(),
     nodes: prepared,
+    groups,
   }
   await writePersonalNodes(env, principal.userId, next)
 
-  const filtered = filterConfigForPrincipal(admin.config, principal)
-  const merged = { ...filtered, nodes: mergePersonalNodes(filtered.nodes, prepared) }
+  const merged = {
+    ...filtered,
+    groups: allGroups,
+    nodes: mergedNodes,
+    regionOrder: reconcileRegionOrder(filtered.regionOrder, mergedNodes, allGroups),
+  }
   return json({
     config: publicConfig(merged),
     meta: await buildMeta(url, admin, env, principal, { ...next, corrupted: false }),
@@ -2156,6 +2278,7 @@ async function buildMeta(url, result, env, principal, personal) {
   const accountToken = !owner && principal ? principal.subscriptionToken : null
   const subToken = owner ? auth : accountToken
   const personalNodes = personal && Array.isArray(personal.nodes) ? personal.nodes : []
+  const personalGroups = personal && Array.isArray(personal.groups) ? personal.groups : []
   return {
     version: VERSION,
     kv: !!kvBinding(env),
@@ -2177,9 +2300,12 @@ async function buildMeta(url, result, env, principal, personal) {
       ? { allNodes: !!principal.scope.allNodes, nodeIds: principal.scope.nodeIds.slice() }
       : { allNodes: true, nodeIds: [] },
     personalNodeIds: personalNodes.map(node => node.id),
+    personalGroupIds: personalGroups.map(group => group.id),
     personalRev: personal ? personal.rev : 0,
     personalCount: personalNodes.length,
+    personalGroupCount: personalGroups.length,
     maxPersonalNodes: MAX_PERSONAL_NODES,
+    maxPersonalGroups: MAX_MEMBER_GROUPS,
     personalCorrupted: !!(personal && personal.corrupted),
   }
 }

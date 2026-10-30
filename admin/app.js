@@ -25,6 +25,8 @@
   ];
   var BUILTIN_GROUP_IDS = DEFAULT_GROUPS.map(function (group) { return group.id; });
   var MAX_GROUPS = 24;
+  /* 成员的个人分组：只影响自己的订阅，上限比所有者低一些 */
+  var MAX_MEMBER_GROUPS = 12;
   var GROUP_NAME_MAX = 40;
   /* 「未分组」不是真分组：这些节点只出现在 🌍选择节点 里 */
   var UNGROUPED = 'none';
@@ -402,6 +404,7 @@
     el.groupSaveSpinner = $('#group-save-spinner');
     el.groupCancel = $('#group-cancel');
     el.groupSummary = $('#group-summary');
+    el.groupsSub = $('#groups-sub');
 
     el.heroAdd = $('#hero-add');
     el.heroPreview = $('#hero-preview');
@@ -1543,8 +1546,9 @@
   /* groups（策略组）                                                    */
   /* ------------------------------------------------------------------ */
 
-  function newGroupId() {
-    return randomId('g_');
+  function newGroupId(prefix) {
+    // 成员分组用 mg_ 前缀：和所有者的内置组 / g_ 自定义组天然隔开
+    return randomId(prefix || 'g_');
   }
 
   function renderGroups() {
@@ -1554,28 +1558,44 @@
       return;
     }
     var list = groups();
+    var own = ownGroups();
+    var owner = isOwner();
     var all = nodes();
     var ungrouped = all.filter(function (node) { return !nodeGroup(node); });
 
-    var cards = list.map(function (group, index) {
+    var cards = list.map(function (group) {
       var members = all.filter(function (node) { return nodeGroupId(node) === group.id; });
       var active = members.filter(function (node) { return node.enabled; }).length;
+      var mine = isOwnGroup(group.id);
+      var ownIndex = own.indexOf(group);
+      var badge = '';
+      if (!mine) {
+        badge = '<span class="group-badge is-soft">共享</span>';
+      } else if (isBuiltinGroup(group.id)) {
+        badge = '<span class="group-badge">内置</span>';
+      } else if (group.icon) {
+        badge = '<span class="group-badge is-soft" title="' + esc(group.icon) + '">自定义图标</span>';
+      }
+      // 共享分组对成员只读：不给按钮，避免点了才发现 403
+      var actions = mine
+        ? '<div class="group-actions">' +
+            '<button class="icon-btn" type="button" data-group-move="' + esc(group.id) + '" data-dir="-1" title="上移分组" aria-label="上移分组"' + (ownIndex === 0 ? ' disabled' : '') + '>' + icon('arrow-up') + '</button>' +
+            '<button class="icon-btn" type="button" data-group-move="' + esc(group.id) + '" data-dir="1" title="下移分组" aria-label="下移分组"' + (ownIndex === own.length - 1 ? ' disabled' : '') + '>' + icon('arrow-down') + '</button>' +
+            '<button class="btn btn-quiet btn-sm" type="button" data-group-edit="' + esc(group.id) + '">' + icon('pen') + '编辑</button>' +
+            '<button class="icon-btn group-delete" type="button" data-group-delete="' + esc(group.id) + '" title="删除分组" aria-label="删除分组 ' + esc(group.name) + '">' + icon('trash') + '</button>' +
+          '</div>'
+        : '';
       return '<article class="group-card' + (state.groupFormId === group.id ? ' is-editing' : '') + '">' +
         '<span class="group-avatar avatar-' + esc(groupTone(group.id)) + '">' + esc(groupEmoji(group.name)) + '</span>' +
         '<div class="group-main">' +
           '<div class="group-title">' +
             '<span class="group-name">' + esc(group.name) + '</span>' +
-            (isBuiltinGroup(group.id) ? '<span class="group-badge">内置</span>' : '') +
-            (!isBuiltinGroup(group.id) && group.icon ? '<span class="group-badge is-soft" title="' + esc(group.icon) + '">自定义图标</span>' : '') +
+            badge +
           '</div>' +
-          '<div class="group-sub">' + members.length + ' 个节点 · ' + active + ' 个已启用</div>' +
+          '<div class="group-sub">' + members.length + ' 个节点 · ' + active + ' 个已启用' +
+            (mine ? '' : ' · 由所有者维护') + '</div>' +
         '</div>' +
-        '<div class="group-actions">' +
-          '<button class="icon-btn" type="button" data-group-move="' + esc(group.id) + '" data-dir="-1" title="上移分组" aria-label="上移分组"' + (index === 0 ? ' disabled' : '') + '>' + icon('arrow-up') + '</button>' +
-          '<button class="icon-btn" type="button" data-group-move="' + esc(group.id) + '" data-dir="1" title="下移分组" aria-label="下移分组"' + (index === list.length - 1 ? ' disabled' : '') + '>' + icon('arrow-down') + '</button>' +
-          '<button class="btn btn-quiet btn-sm" type="button" data-group-edit="' + esc(group.id) + '">' + icon('pen') + '编辑</button>' +
-          '<button class="icon-btn group-delete" type="button" data-group-delete="' + esc(group.id) + '" title="删除分组" aria-label="删除分组 ' + esc(group.name) + '">' + icon('trash') + '</button>' +
-        '</div>' +
+        actions +
       '</article>';
     }).join('');
 
@@ -1592,7 +1612,14 @@
 
     el.groupList.innerHTML = cards + rest;
     if (el.groupSummary) {
-      el.groupSummary.textContent = list.length + ' 个分组 · ' + all.length + ' 个节点';
+      el.groupSummary.textContent = owner
+        ? list.length + ' 个分组 · ' + all.length + ' 个节点'
+        : own.length + ' 个自定义分组 · ' + (list.length - own.length) + ' 个共享分组';
+    }
+    if (el.groupsSub) {
+      el.groupsSub.textContent = owner
+        ? '每个分组都会作为独立策略组写入订阅；改名、换图标或调整顺序都不会改动节点数据。'
+        : '共享分组由所有者维护；你新建的分组只出现在自己的订阅里，用来收纳个人节点。';
     }
   }
 
@@ -1634,15 +1661,18 @@
 
   function openGroupEditor(id) {
     if (!el.groupForm) return;
-    if (!isOwner()) return;
     if (!ensureWritable()) return;
     var group = id ? groupById(id) : null;
     if (id && !group) {
       toast('分组不存在，请刷新后重试', 'error');
       return;
     }
-    if (!id && groups().length >= MAX_GROUPS) {
-      toast('分组数量已达上限 ' + MAX_GROUPS + ' 个', 'error');
+    if (group && !isOwnGroup(group.id)) {
+      toast('共享分组由所有者维护，不能在这里修改', 'info');
+      return;
+    }
+    if (!id && ownGroups().length >= groupLimit()) {
+      toast('分组数量已达上限 ' + groupLimit() + ' 个', 'error');
       return;
     }
     state.groupFormId = group ? group.id : null;
@@ -1653,7 +1683,9 @@
     if (el.groupFormSub) {
       el.groupFormSub.textContent = group
         ? '改名或换图标会同步到订阅里的策略组，节点归属不变。'
-        : '新分组会作为独立策略组写入订阅，节点可以在节点管理里移入。';
+        : (isOwner()
+          ? '新分组会作为独立策略组写入订阅，节点可以在节点管理里移入。'
+          : '新分组只出现在你自己的订阅里，节点可以在节点管理里移入。');
     }
     setGroupBusy(false);
     el.groupForm.hidden = false;
@@ -1698,7 +1730,7 @@
 
   async function submitGroupForm(event) {
     if (event) event.preventDefault();
-    if (!isOwner() || state.mutating || state.groupBusy) return;
+    if (state.mutating || state.groupBusy) return;
     if (!ensureWritable()) return;
     var editing = state.groupFormId;
     var name = String(el.groupName.value || '').trim();
@@ -1709,17 +1741,18 @@
       return;
     }
 
-    var list = groups().map(function (group) { return Object.assign({}, group); });
+    var owner = isOwner();
+    var list = (owner ? groups() : ownGroups()).map(function (group) { return Object.assign({}, group); });
     if (editing) {
       list = list.map(function (group) {
         return group.id === editing ? Object.assign({}, group, { name: name, icon: icon }) : group;
       });
     } else {
-      if (list.length >= MAX_GROUPS) {
-        showGroupErrors([{ key: 'groupName', message: '分组数量不能超过 ' + MAX_GROUPS + ' 个' }]);
+      if (list.length >= groupLimit()) {
+        showGroupErrors([{ key: 'groupName', message: '分组数量不能超过 ' + groupLimit() + ' 个' }]);
         return;
       }
-      list.push({ id: newGroupId(), name: name, icon: icon });
+      list.push({ id: newGroupId(owner ? 'g_' : 'mg_'), name: name, icon: icon });
     }
 
     setGroupBusy(true);
@@ -1733,17 +1766,19 @@
   }
 
   async function moveGroup(id, dir) {
-    if (!isOwner() || state.mutating || !ensureWritable()) return;
-    var list = groups().map(function (group) { return Object.assign({}, group); });
+    if (state.mutating || !ensureWritable() || !isOwnGroup(id)) return;
+    var own = ownGroups().map(function (group) { return Object.assign({}, group); });
     var index = -1;
-    for (var i = 0; i < list.length; i++) {
-      if (list[i].id === id) index = i;
+    for (var i = 0; i < own.length; i++) {
+      if (own[i].id === id) index = i;
     }
     var target = index + dir;
-    if (index < 0 || target < 0 || target >= list.length) return;
-    var tmp = list[index];
-    list[index] = list[target];
-    list[target] = tmp;
+    if (index < 0 || target < 0 || target >= own.length) return;
+    var tmp = own[index];
+    own[index] = own[target];
+    own[target] = tmp;
+    // 共享分组保持所有者定的顺序在前，成员只在自建分组内部调序
+    var list = groups().filter(function (group) { return !isOwnGroup(group.id); }).concat(own);
     await saveNodes(nodes(), {
       groups: list,
       successMessage: '分组顺序已更新',
@@ -1753,12 +1788,12 @@
 
   function askDeleteGroup(id) {
     var group = groupById(id);
-    if (!group || !isOwner() || !ensureWritable() || state.mutating) return;
+    if (!group || !isOwnGroup(id) || !ensureWritable() || state.mutating) return;
     var members = nodes().filter(function (node) { return nodeGroupId(node) === id; });
     openConfirm({
       title: '删除分组「' + group.name + '」？',
       segments: [
-        { text: '策略组会从订阅中移除；其中的 ' },
+        { text: isOwner() ? '策略组会从订阅中移除；其中的 ' : '策略组会从你的订阅中移除；其中的 ' },
         { strong: true, text: String(members.length) + ' 个节点' },
         { text: ' 不会被删除，而是变成「未分组」，只出现在 🌍选择节点 里。' }
       ],
@@ -1770,8 +1805,10 @@
 
   async function doDeleteGroup(id) {
     if (state.mutating) return;
-    var list = groups().filter(function (group) { return group.id !== id; });
-    if (!list.length) {
+    var owner = isOwner();
+    var list = (owner ? groups() : ownGroups()).filter(function (group) { return group.id !== id; });
+    // 所有者必须保留至少一个分组；成员可以一个自建分组都不留
+    if (owner && !list.length) {
       toast('至少需要保留一个分组；可以先新建一个再删除这个', 'error');
       closeModal('generic');
       return;
@@ -1807,6 +1844,27 @@
   function isOwner() {
     // 旧版本 Worker 的 meta 没有 role，按原有行为视为所有者
     return !!(state.meta && state.meta.role !== 'member');
+  }
+
+  /* 分组归属：所有者能管全部分组；成员只能管自己新建的（id 记在 meta.personalGroupIds） */
+  function personalGroupIds() {
+    var ids = state.meta && state.meta.personalGroupIds;
+    return Array.isArray(ids) ? ids : [];
+  }
+
+  function isOwnGroup(id) {
+    if (isOwner()) return true;
+    return personalGroupIds().indexOf(id) !== -1;
+  }
+
+  function ownGroups() {
+    return groups().filter(function (group) { return isOwnGroup(group.id); });
+  }
+
+  function groupLimit() {
+    if (isOwner()) return MAX_GROUPS;
+    var max = state.meta && Number(state.meta.maxPersonalGroups);
+    return Number.isFinite(max) && max > 0 ? max : MAX_MEMBER_GROUPS;
   }
 
   function canWrite() {
@@ -2138,7 +2196,7 @@
 
   function switchView(view) {
     if (!VIEW_META[view]) view = 'overview';
-    if ((view === 'users' || view === 'groups') && !isOwner()) view = 'overview';
+    if (view === 'users' && !isOwner()) view = 'overview';
     state.view = view;
     el.navItems.forEach(function (button) {
       var active = button.dataset.view === view;
@@ -2985,11 +3043,16 @@
       var body = owner
         ? { rev: state.rev, nodes: payloadNodes }
         : { rev: Number((state.meta && state.meta.personalRev) || 0), nodes: payloadNodes };
+      if (opts.groups) {
+        // 成员只能提交自建分组：共享分组由所有者维护，混进来会被服务端整单拒绝
+        body.groups = owner
+          ? opts.groups
+          : opts.groups.filter(function (group) { return isOwnGroup(group.id) || /^mg_/.test(group.id); });
+      }
       if (owner) {
         if (opts.defaults) body.defaults = opts.defaults;
         if (opts.subscription) body.subscription = opts.subscription;
         if (opts.regionOrder) body.regionOrder = opts.regionOrder;
-        if (opts.groups) body.groups = opts.groups;
         if (opts.providerBase !== undefined) body.providerBase = opts.providerBase;
       }
       var data = await request(owner ? '/api/config' : '/api/nodes', {

@@ -209,7 +209,7 @@
       <button class="nav-item" type="button" data-view="nodes" aria-label="节点管理">
         <svg class="icon"><use href="#i-server"></use></svg><span class="nav-text">节点管理</span><span class="nav-badge" id="nav-count">0</span>
       </button>
-      <button class="nav-item" type="button" data-view="groups" aria-label="分组管理" data-owner-only>
+      <button class="nav-item" type="button" data-view="groups" aria-label="分组管理">
         <svg class="icon"><use href="#i-layers"></use></svg><span class="nav-text">分组管理</span>
       </button>
       <button class="nav-item" type="button" data-view="preview" aria-label="订阅预览">
@@ -434,7 +434,7 @@
           <div class="page-actions">
             <button class="btn btn-secondary" type="button" id="nodes-export" data-owner-only><svg class="icon"><use href="#i-download"></use></svg>导出备份</button>
             <button class="btn btn-secondary" type="button" id="nodes-import" data-owner-only><svg class="icon"><use href="#i-upload"></use></svg>导入备份</button>
-            <button class="btn btn-secondary" type="button" id="nodes-links"><svg class="icon"><use href="#i-link"></use></svg>导入和分享节点</button>
+            <button class="btn btn-secondary" type="button" id="nodes-links"><svg class="icon"><use href="#i-link"></use></svg>导入和分享链接</button>
             <button class="btn btn-primary" type="button" id="nodes-add"><svg class="icon"><use href="#i-plus"></use></svg>添加节点</button>
             <input type="file" id="import-file" accept="application/json,.json" hidden>
           </div>
@@ -509,7 +509,7 @@
           <div>
             <span class="eyebrow">Groups</span>
             <h1>分组管理</h1>
-            <p class="page-sub">每个分组都会作为独立策略组写入订阅；改名、换图标或调整顺序都不会改动节点数据。</p>
+            <p class="page-sub" id="groups-sub">每个分组都会作为独立策略组写入订阅；改名、换图标或调整顺序都不会改动节点数据。</p>
           </div>
           <div class="page-actions">
             <span class="soft-pill" id="group-summary">0 个分组</span>
@@ -1217,7 +1217,7 @@
     <header class="links-head">
       <span class="modal-icon tone-indigo"><svg class="icon"><use href="#i-link"></use></svg></span>
       <div class="links-title-wrap">
-        <h2 id="links-title">分享链接</h2>
+        <h2 id="links-title">导入和分享链接</h2>
         <p>批量导入现有节点，或导出一份可迁移的链接清单。</p>
       </div>
       <button class="icon-btn" type="button" data-close-modal="links" aria-label="关闭"><svg class="icon"><use href="#i-close"></use></svg></button>

@@ -798,6 +798,126 @@ group('成员个人节点')
   check('删除账号时清理个人节点', !env.data.has('user_nodes:' + memberId))
 }
 
+group('成员个人分组')
+{
+  const env = makeEnv()
+  const ownerToken = await initConsole(env)
+  await putConfig(env, ownerToken, { rev: 0, nodes: fullNodes(), authToken: SUB_TOKEN })
+
+  const users = (await call(env, '/api/users', { headers: bearer(ownerToken) })).body
+  await call(env, '/api/users', {
+    method: 'POST',
+    headers: { ...bearer(ownerToken), 'content-type': 'application/json' },
+    body: JSON.stringify({
+      rev: users.rev,
+      username: 'grouper',
+      password: 'Grouper-Pass-1',
+      role: 'member',
+      scope: { allNodes: false, nodeIds: ['n_hk1'] },
+    }),
+  })
+  const memberToken = (await login(env, 'grouper', 'Grouper-Pass-1')).body.token
+  const putPersonal = (token, payload) => call(env, '/api/nodes', {
+    method: 'PUT',
+    headers: { ...bearer(token), 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+
+  const first = await putPersonal(memberToken, {
+    rev: 0,
+    groups: [{ id: 'mg_game', name: '🎮 我的游戏' }],
+    nodes: [{ ...ssNode(), id: 'p_g1', name: 'MY-GAME-1', groupId: 'mg_game' }],
+  })
+  eq('成员保存个人分组 200', first.status, 200)
+  const firstIds = first.body.config.groups.map(g => g.id)
+  check('个人分组进入合并分组表', firstIds.includes('mg_game'), firstIds.join(','))
+  check('共享分组仍在', firstIds.includes('hk') || firstIds.includes('us'), firstIds.join(','))
+  eq('meta 返回个人分组 id', first.body.meta.personalGroupIds.join(','), 'mg_game')
+  eq('meta 给出个人分组数量', first.body.meta.personalGroupCount, 1)
+  eq('meta 给出个人分组上限', first.body.meta.maxPersonalGroups, 12)
+
+  const memberCfg = await getConfig(env, memberToken)
+  check('成员配置含个人分组', memberCfg.body.config.groups.some(g => g.id === 'mg_game'))
+  const memberSub = new URL(memberCfg.body.meta.subUrl).searchParams.get('token')
+  const yaml = await call(env, '/?token=' + encodeURIComponent(memberSub))
+  check('成员订阅输出个人分组', yaml.body.includes('- name: "🎮 我的游戏"'))
+  check('个人节点落在个人分组',
+    yaml.body.split('🎮 我的游戏')[1].split('- name:')[0].includes('"MY-GAME-1"'))
+
+  const adminCfg = await getConfig(env, ownerToken)
+  check('所有者看不到成员分组', !adminCfg.body.config.groups.some(g => g.id === 'mg_game'))
+  check('全局订阅不含成员分组', !(await call(env, '/?token=' + SUB_TOKEN)).body.includes('🎮 我的游戏'))
+
+  // 旧版前端只传 nodes：已存的个人分组不能被顺手清空
+  const nodesOnly = await putPersonal(memberToken, {
+    rev: 1,
+    nodes: [{ ...ssNode(), id: 'p_g1', name: 'MY-GAME-1', groupId: 'mg_game' }],
+  })
+  eq('只传节点也能保存', nodesOnly.status, 200)
+  eq('未传 groups 时保留个人分组', nodesOnly.body.meta.personalGroupIds.join(','), 'mg_game')
+
+  // 写入校验
+  const dupShared = await putPersonal(memberToken, {
+    rev: 2,
+    groups: [{ id: 'mg_a', name: '🇭🇰港台节点' }],
+    nodes: [],
+  })
+  eq('与共享分组重名 400', dupShared.status, 400)
+  const reserved = await putPersonal(memberToken, {
+    rev: 2,
+    groups: [{ id: 'mg_a', name: 'DIRECT' }],
+    nodes: [],
+  })
+  eq('占用内置策略名 400', reserved.status, 400)
+  const tooMany = await putPersonal(memberToken, {
+    rev: 2,
+    groups: Array.from({ length: 13 }, (_, i) => ({ id: 'mg_' + i, name: 'MG-' + i })),
+    nodes: [],
+  })
+  eq('个人分组超过 12 个 400', tooMany.status, 400)
+  const hijack = await putPersonal(memberToken, {
+    rev: 2,
+    groups: [{ id: 'hk', name: '我的香港' }],
+    nodes: [],
+  })
+  eq('提交共享分组 id 仍可保存', hijack.status, 200)
+  const hijacked = hijack.body.config.groups.find(g => g.name === '我的香港')
+  check('共享分组 id 被重写为 mg_', hijacked && hijacked.id.startsWith('mg_') && hijacked.id !== 'hk', hijacked && hijacked.id)
+  eq('原共享分组未被改名',
+    (await getConfig(env, ownerToken)).body.config.groups.find(g => g.id === 'hk').name, '🇭🇰港台节点')
+
+  const clash = await putPersonal(memberToken, {
+    rev: 3,
+    groups: [{ id: 'mg_b', name: 'HK-01' }],
+    nodes: [],
+  })
+  eq('个人分组与共享节点同名 400', clash.status, 400)
+
+  // 删除分组：节点保留，归入未分组
+  const dropped = await putPersonal(memberToken, {
+    rev: 3,
+    groups: [],
+    nodes: [{ ...ssNode(), id: 'p_g1', name: 'MY-GAME-1', groupId: 'mg_game' }],
+  })
+  eq('清空个人分组 200', dropped.status, 200)
+  eq('被删分组下的节点归入未分组', dropped.body.config.nodes.find(n => n.id === 'p_g1').groupId, '')
+  check('订阅不再输出个人分组', !(await call(env, '/?token=' + encodeURIComponent(memberSub))).body.includes('🎮 我的游戏'))
+
+  // 手工改坏的 KV：坏分组丢弃，好分组保留
+  const currentUsers = (await call(env, '/api/users', { headers: bearer(ownerToken) })).body
+  const memberId = currentUsers.users.find(user => user.username === 'grouper').id
+  env.data.set('user_nodes:' + memberId, JSON.stringify({
+    v: 1,
+    rev: 9,
+    nodes: [],
+    groups: [{ id: 'bad', name: '' }, { id: 'mg_ok', name: '正常分组' }, { id: 'mg_ok', name: '重复 id' }],
+  }))
+  const recovered = await getConfig(env, memberToken)
+  eq('坏分组被丢弃，好分组保留',
+    recovered.body.config.groups.filter(g => g.id === 'mg_ok').length, 1)
+  check('空名分组不会进入配置', !recovered.body.config.groups.some(g => g.id === 'bad'))
+}
+
 group('旧账号库迁移')
 {
   const env = makeEnv()

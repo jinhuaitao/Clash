@@ -28,7 +28,7 @@ Clash / Mihomo 订阅生成器 · 可视化管理控制台 · 零运行时依赖
 
 ```mermaid
 flowchart LR
-    C["Clash / Mihomo 客户端<br/>浏览器控制台"] -->|"HTTPS"| W["Cloudflare Worker<br/>单个文件 "]
+    C["Clash / Mihomo 客户端<br/>浏览器控制台"] -->|"HTTPS"| W["Cloudflare Worker<br/>单个 dist/1.js"]
     W -->|"读写"| K[("Cloudflare KV<br/>节点 · 账号 · 配置")]
 ```
 
@@ -40,7 +40,7 @@ flowchart LR
 | :--- | :--- |
 | **订阅** | `/?token=…` 直接输出可用的 Clash / Mihomo YAML，12 小时自动更新；配置流量后附带 `subscription-userinfo` |
 | **节点** | 增删改、启停、拖序、搜索筛选、Shift 连选、批量操作与一键撤销 |
-| **分组** | 自定义策略组，改名 / 换图标 / 调顺序；节点随分组走，改名不断链 |
+| **分组** | 自定义策略组，改名 / 换图标 / 调顺序；节点随分组走，改名不断链。成员也能新建只对自己订阅生效的分组 |
 | **导入导出** | VLESS、Hysteria2、Trojan、VMess、SS 分享链接批量互转 |
 | **预览** | 实时 YAML、分组统计、全文搜索、复制与下载 |
 | **账号** | 所有者 / 成员两级，成员只管自己的节点，共享节点由所有者分配 |
@@ -106,11 +106,11 @@ npx wrangler secret put ADMIN_TOKEN   # 16 位以上的随机字符串
 | 角色 | 权限 |
 | :--- | :--- |
 | **所有者** | 管理账号、增删全部节点、修改设置，用 `AUTH_TOKEN` 拉取全量订阅 |
-| **成员** | 只看分配给自己的共享节点，可增删自己的个人节点（上限 100 个），能自助改密 |
+| **成员** | 只看分配给自己的共享节点，可增删自己的个人节点（上限 100 个）与个人分组（上限 12 个），能自助改密 |
 
 - 每个账号有独立订阅链接 `sub_<定位段>.<签名>`，由 `secret` 与账号版本派生、不落库；改密后旧链接立即失效。
 - 会话是 HMAC 签名令牌，存 `sessionStorage`，关标签页即失效；重置密码会作废该账号全部旧会话。
-- 账号上限 20 人、节点上限 300 个、分组上限 24 个。
+- 账号上限 20 人、节点上限 300 个、分组上限 24 个，成员个人分组上限 12 个。
 - **`ADMIN_TOKEN` ≠ `AUTH_TOKEN`**：前者是恢复通道，后者只能拉订阅、不能登录控制台，别复用同一个值。
 
 <details>
@@ -133,7 +133,7 @@ npx wrangler secret put ADMIN_TOKEN   # 16 位以上的随机字符串
 | `POST` | `/api/login` | 公开 | 用户名或邮箱 + 密码 |
 | `GET` | `/api/config` | 会话 | 配置与运行状态，成员的响应只含其可见节点 |
 | `PUT` | `/api/config` | 所有者 | 整体保存（含 `groups`），`rev` 乐观锁 |
-| `PUT` | `/api/nodes` | 成员 | 保存个人节点，`personalRev` 乐观锁 |
+| `PUT` | `/api/nodes` | 成员 | 保存个人节点与个人分组，`personalRev` 乐观锁 |
 | `GET` | `/api/preview` | 会话 | 当前配置渲染出的 YAML |
 | `POST` | `/api/password` | 会话 | 自助改密，返回新会话令牌 |
 | `GET` `POST` | `/api/users` `/update` `/delete` | 所有者 | 账号列表、新建、改角色 / 范围 / 密码、删除 |
@@ -156,7 +156,7 @@ npx wrangler secret put ADMIN_TOKEN   # 16 位以上的随机字符串
 }
 ```
 
-`config` 键存配置，`users` 键单独存账号（`role` / `scope` / `passwordSalt` / `passwordHash` / `version`）与会话签名用的 `secret`。字段残缺或类型不对的节点在渲染时被跳过，不会把 `"undefined"` 写进订阅，也不会让整条订阅 500。
+`config` 键存配置，`users` 键单独存账号（`role` / `scope` / `passwordSalt` / `passwordHash` / `version`）与会话签名用的 `secret`。成员的个人节点与个人分组存在 `user_nodes:<id>`，两者共用同一个 `personalRev`。字段残缺或类型不对的节点在渲染时被跳过，不会把 `"undefined"` 写进订阅，也不会让整条订阅 500。
 
 </details>
 
@@ -166,7 +166,7 @@ npx wrangler secret put ADMIN_TOKEN   # 16 位以上的随机字符串
 - **凭据形态是硬门槛**：令牌少于 16 位、含空白或控制字符时一律忽略，不会「将就着用」。
 - **口令**：最短 12 位，拒绝常见弱口令、单字符重复、键盘序列与「等于用户名」；不强制字符组合，长口令短语照样可用。
 - **令牌不外泄**：设置页与 `/api/config` 都不回显订阅令牌，备份 JSON 不含令牌；唯一明文是 `meta.subUrl`，等价于订阅链接本身。
-- **成员边界**：专属令牌只能取 `scope` 内的共享节点和自己的个人节点，不能登录控制台。
+- **成员边界**：专属令牌只能取 `scope` 内的共享节点、自己的个人节点与个人分组，不能登录控制台，也不能改动共享分组。
 - **TLS 校验默认开启**：只有自签证书且确认链路可信时才勾「跳过证书校验」。
 - **响应头**：CSP（`script-src` / `style-src` 全走 nonce）、`X-Frame-Options: DENY`、COOP / CORP、HSTS、`noindex`。
 - **不可见字符会被拒**：节点名、用户名、服务器地址里的零宽 / 双向控制符，写入与渲染两处都拦。
@@ -196,6 +196,7 @@ scripts/api.test.mjs   零依赖接口回归测试
 wrangler.toml          Worker 配置 + KV / 限流绑定声明
 ```
 
+`dist/1.js` 是唯一被部署的文件，由构建现场生成，不进仓库。
 
 </details>
 
