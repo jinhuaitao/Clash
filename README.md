@@ -28,7 +28,7 @@ Clash / Mihomo 订阅生成器 · 可视化管理控制台 · 零运行时依赖
 
 ```mermaid
 flowchart LR
-    C["Clash / Mihomo 客户端<br/>浏览器控制台"] -->|"HTTPS"| W["Cloudflare Worker<br/>单个 dist/1.js"]
+    C["Clash / Mihomo 客户端<br/>浏览器控制台"] -->|"HTTPS"| W["Cloudflare Worker<br/>单个文件"]
     W -->|"读写"| K[("Cloudflare KV<br/>节点 · 账号 · 配置")]
 ```
 
@@ -196,7 +196,6 @@ scripts/api.test.mjs   零依赖接口回归测试
 wrangler.toml          Worker 配置 + KV / 限流绑定声明
 ```
 
-`dist/1.js` 是唯一被部署的文件，由构建现场生成，不进仓库。
 
 </details>
 
