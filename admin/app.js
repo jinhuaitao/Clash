@@ -15,14 +15,21 @@
   var FINGERPRINTS = ['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', 'random', 'randomized'];
   var SS_CIPHERS = ['aes-128-gcm', 'aes-256-gcm', 'chacha20-ietf-poly1305', 'xchacha20-ietf-poly1305'];
 
-  var REGION_META = {
-    us: { group: '🇺🇸欧美节点', short: '欧美', flag: '🇺🇸' },
-    jp: { group: '🇯🇵日韩节点', short: '日韩', flag: '🇯🇵' },
-    hk: { group: '🇭🇰港台节点', short: '港台', flag: '🇭🇰' },
-    relay: { group: '📶中转节点', short: '中转', flag: '📶' },
-    other: { group: MAIN_GROUP, short: '未分组', flag: '🌐' }
-  };
-  var REGION_ORDER = ['us', 'jp', 'hk', 'relay', 'other'];
+  /* 分组（策略组）由控制台维护，存在 config.groups 里。
+     内置四组的 id 沿用旧版 region 键，历史数据与 regionOrder 无需迁移。 */
+  var DEFAULT_GROUPS = [
+    { id: 'us', name: '🇺🇸欧美节点', icon: 'https://fastly.jsdelivr.net/gh/Koolson/Qure/IconSet/Color/United_States.png' },
+    { id: 'jp', name: '🇯🇵日韩节点', icon: 'https://fastly.jsdelivr.net/gh/Koolson/Qure/IconSet/Color/Japan.png' },
+    { id: 'hk', name: '🇭🇰港台节点', icon: 'https://fastly.jsdelivr.net/gh/Koolson/Qure/IconSet/Color/Hong_Kong.png' },
+    { id: 'relay', name: '📶中转节点', icon: 'https://fastly.jsdelivr.net/gh/Koolson/Qure/IconSet/Color/Relay.png' }
+  ];
+  var BUILTIN_GROUP_IDS = DEFAULT_GROUPS.map(function (group) { return group.id; });
+  var MAX_GROUPS = 24;
+  var GROUP_NAME_MAX = 40;
+  /* 「未分组」不是真分组：这些节点只出现在 🌍选择节点 里 */
+  var UNGROUPED = 'none';
+  var GROUP_TONES = 6;
+  var GROUP_PALETTE = ['#4f46e5', '#db2777', '#0891b2', '#d97706', '#059669', '#7c3aed'];
 
   var TYPE_META = {
     vless: { label: 'VLESS', color: '#4f46e5' },
@@ -54,14 +61,25 @@
     'DIRECT', 'REJECT', 'REJECT-DROP', 'PASS', 'GLOBAL'
   ]);
 
+  /* 分组名可以用内置分组名（由分组表去重保证唯一），但不能占用全局选择组 /
+     应用策略组 / 内置策略的名字，否则 YAML 里会出现重名策略组 */
+  var RESERVED_GROUP_NAMES = new Set([
+    MAIN_GROUP, '💬ChatGPT', 'ⒼGoogle', '📺YOUTUBE', '📲 电报信息',
+    'DIRECT', 'REJECT', 'REJECT-DROP', 'PASS', 'GLOBAL'
+  ]);
+
   var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   var HOST_RE = /^[A-Za-z0-9._%:\-\[\]]+$/;
   var BANDWIDTH_RE = /^\d{1,6}(?:\.\d{1,2})?\s*(kbps|mbps|gbps)$/i;
   var CONTROL_RE = /[\u0000-\u001f\u007f]/;
+  /* 名称开头的 emoji：分组没有单独的图标字段，列表头像直接取名字里的第一个符号。
+     范围覆盖旗帜（两个区域指示符）、常见 emoji 与变体选择符，取不到时回落到 🌐。 */
+  var EMOJI_LEAD_RE = new RegExp('^[\\u{1F1E6}-\\u{1F1FF}\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}\\u{2B00}-\\u{2BFF}\\u{FE0F}\\u{200D}]+', 'u');
 
   var VIEW_META = {
     overview: '概览',
     nodes: '节点管理',
+    groups: '分组管理',
     preview: '订阅预览',
     users: '用户管理',
     settings: '设置'
@@ -86,7 +104,9 @@
     view: 'overview',
     query: '',
     filterType: 'all',
-    filterRegion: 'all',
+    filterGroup: 'all',
+    groupFormId: null,
+    groupBusy: false,
     preview: '',
     previewDirty: true,
     previewLoading: false,
@@ -353,7 +373,7 @@
     el.nodesLinks = $('#nodes-links');
     el.nodeSearch = $('#node-search');
     el.filterType = $('#filter-type');
-    el.filterRegion = $('#filter-region');
+    el.filterGroup = $('#filter-group');
     el.filterReset = $('#filter-reset');
     el.nodeCountLabel = $('#node-count-label');
     el.nodeHead = $('.node-head');
@@ -366,9 +386,22 @@
     el.selectAll = $('#select-all');
     el.bulkBar = $('#bulk-bar');
     el.bulkCount = $('#bulk-count');
-    el.bulkRegion = $('#bulk-region');
+    el.bulkGroup = $('#bulk-group');
     el.bulkClear = $('#bulk-clear');
     el.rowMenu = $('#row-menu');
+
+    el.groupList = $('#group-list');
+    el.groupAdd = $('#group-add');
+    el.groupForm = $('#group-form');
+    el.groupFormTitle = $('#group-form-title');
+    el.groupFormSub = $('#group-form-sub');
+    el.groupName = $('#group-name');
+    el.groupIcon = $('#group-icon');
+    el.groupSave = $('#group-save');
+    el.groupSaveLabel = $('#group-save-label');
+    el.groupSaveSpinner = $('#group-save-spinner');
+    el.groupCancel = $('#group-cancel');
+    el.groupSummary = $('#group-summary');
 
     el.heroAdd = $('#hero-add');
     el.heroPreview = $('#hero-preview');
@@ -409,7 +442,7 @@
     el.vmGrpcFields = $('#vm-grpc-fields');
 
     el.fieldName = $('#f-name');
-    el.fieldRegion = $('#f-region');
+    el.fieldGroup = $('#f-group');
     el.fieldServer = $('#f-server');
     el.fieldPort = $('#f-port');
     el.fieldEnabled = $('#f-enabled');
@@ -520,7 +553,7 @@
     el.linksTabs = $$('#links-layer .tab');
     el.linksPanels = $$('#links-layer .tab-panel');
     el.linksInput = $('#links-input');
-    el.linksRegion = $('#links-region');
+    el.linksGroup = $('#links-group');
     el.linksSummary = $('#links-summary');
     el.linksFeedback = $('#links-feedback');
     el.linksPreview = $('#links-preview');
@@ -943,7 +976,9 @@
     state.mutating = false;
     state.query = '';
     state.filterType = 'all';
-    state.filterRegion = 'all';
+    state.filterGroup = 'all';
+    state.groupFormId = null;
+    state.groupBusy = false;
     state.editingId = null;
     state.deletingId = null;
     state.selected.clear();
@@ -1019,10 +1054,117 @@
     return nodes().filter(function (node) { return node.enabled; });
   }
 
+  /* ---- groups ---- */
+
+  // 分组表：配置里没有（首次部署 / 旧版本数据）时回落到内置四组
+  function groups() {
+    var list = state.config && state.config.groups;
+    return Array.isArray(list) && list.length ? list : DEFAULT_GROUPS;
+  }
+
+  function groupById(id) {
+    if (!id) return null;
+    var list = groups();
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].id === id) return list[i];
+    }
+    return null;
+  }
+
+  function isBuiltinGroup(id) {
+    return BUILTIN_GROUP_IDS.indexOf(id) !== -1;
+  }
+
+  function nodeGroupId(node) {
+    return node && typeof node.groupId === 'string' ? node.groupId : '';
+  }
+
+  function nodeGroup(node) {
+    return groupById(nodeGroupId(node));
+  }
+
+  function groupLabel(node) {
+    var group = nodeGroup(node);
+    return group ? group.name : '未分组';
+  }
+
+  function groupEmoji(name) {
+    var match = EMOJI_LEAD_RE.exec(String(name || '').replace(/^\s+/, ''));
+    return match ? match[0] : '🌐';
+  }
+
+  // 表格里的分组列空间有限：去掉名字开头的 emoji 后截断，完整名字放 title
+  function groupShort(name) {
+    var text = String(name || '').replace(EMOJI_LEAD_RE, '').trim();
+    if (!text) return String(name || '').trim();
+    return text.length > 6 ? text.slice(0, 6) + '…' : text;
+  }
+
+  // 自定义分组没有预设配色：按 id 散列到固定色板，改名 / 换顺序都不会跳色
+  function groupTone(id) {
+    if (!id || !groupById(id)) return 'other';
+    var hash = 0;
+    for (var i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) % 9973;
+    return 'tone' + (hash % GROUP_TONES);
+  }
+
+  function groupColor(id) {
+    var tone = groupTone(id);
+    if (tone === 'other') return '#64748b';
+    return GROUP_PALETTE[Number(tone.slice(4)) % GROUP_PALETTE.length];
+  }
+
+  function groupOptionHtml(list) {
+    return list.map(function (group) {
+      return '<option value="' + esc(group.id) + '">' + esc(group.name) + '</option>';
+    }).join('');
+  }
+
+  /* 四个下拉（筛选 / 批量移动 / 分享链接 / 节点表单）共用同一份分组表，
+     重建 innerHTML 后尽量保留用户当前的选择。 */
+  function renderGroupOptions() {
+    var list = groups();
+    var options = groupOptionHtml(list);
+
+    if (el.filterGroup) {
+      var wanted = state.filterGroup;
+      el.filterGroup.innerHTML = '<option value="all">全部分组</option>' + options +
+        '<option value="' + UNGROUPED + '">未分组</option>';
+      var valid = wanted === 'all' || wanted === UNGROUPED || !!groupById(wanted);
+      el.filterGroup.value = valid ? wanted : 'all';
+      state.filterGroup = el.filterGroup.value;
+    }
+
+    if (el.bulkGroup) {
+      var bulkValue = el.bulkGroup.value;
+      el.bulkGroup.innerHTML = '<option value="">移动到分组…</option>' + options +
+        '<option value="' + UNGROUPED + '">🌐 仅选择列表</option>';
+      if (bulkValue && (bulkValue === UNGROUPED || groupById(bulkValue))) el.bulkGroup.value = bulkValue;
+    }
+
+    if (el.linksGroup) {
+      var linksValue = el.linksGroup.value;
+      el.linksGroup.innerHTML = '<option value="auto">自动识别</option>' + options +
+        '<option value="' + UNGROUPED + '">🌐 仅选择列表</option>';
+      if (linksValue && (linksValue === 'auto' || linksValue === UNGROUPED || groupById(linksValue))) {
+        el.linksGroup.value = linksValue;
+      }
+    }
+
+    if (el.fieldGroup) {
+      var fieldValue = el.fieldGroup.value;
+      el.fieldGroup.innerHTML = options + '<option value="' + UNGROUPED + '">🌐 仅选择列表</option>';
+      if (fieldValue && (fieldValue === UNGROUPED || groupById(fieldValue))) el.fieldGroup.value = fieldValue;
+      else if (list.length) el.fieldGroup.value = list[0].id;
+    }
+  }
+
   function renderAll() {
+    renderGroupOptions();
     renderChrome();
     renderOverview();
     renderNodeList();
+    renderGroups();
     renderSubUrls();
     renderPreviewGroups();
   }
@@ -1117,15 +1259,12 @@
       if (typeCounts[node.type] !== undefined) typeCounts[node.type] += 1;
     });
     var activeTypes = TYPE_ORDER.filter(function (type) { return typeCounts[type] > 0; });
-    var regionCounts = {};
+    var groupCounts = {};
     enabled.forEach(function (node) {
-      var region = REGION_META[node.region] ? node.region : 'other';
-      regionCounts[region] = (regionCounts[region] || 0) + 1;
+      var id = nodeGroupId(node);
+      if (id && groupById(id)) groupCounts[id] = (groupCounts[id] || 0) + 1;
     });
-    var regionBuckets = REGION_ORDER.filter(function (key) {
-      return key !== 'other' && regionCounts[key];
-    });
-    var activeGroups = 1 + regionBuckets.length + 4;
+    var activeGroups = 1 + Object.keys(groupCounts).length + APP_GROUPS.length;
 
     el.statTotal.textContent = String(list.length);
     el.statEnabled.textContent = String(enabled.length);
@@ -1156,21 +1295,16 @@
     }
     el.protoTotal.textContent = enabled.length + ' 在线';
 
-    var regionRows = REGION_ORDER.filter(function (key) {
-      return key !== 'other' || regionCounts.other;
-    }).filter(function (key) {
-      return regionCounts[key];
-    });
-    if (!regionRows.length) {
+    var groupRows = groups().filter(function (group) { return groupCounts[group.id]; });
+    if (!groupRows.length) {
       el.regionBars.innerHTML = '<div class="bar-empty">暂无分组数据</div>';
     } else {
-      el.regionBars.innerHTML = regionRows.map(function (key) {
-        var count = regionCounts[key] || 0;
+      el.regionBars.innerHTML = groupRows.map(function (group) {
+        var count = groupCounts[group.id] || 0;
         var percent = Math.round((count / enabled.length) * 100);
-        var region = REGION_META[key];
         return '<div class="bar-row">' +
-          '<span class="bar-label"><span class="type-dot" data-color="' + esc(regionColor(key)) + '"></span><b>' + esc(region.group) + '</b></span>' +
-          '<span class="bar-track"><span class="bar-fill fill-' + key + '" data-pct="' + percent + '"></span></span>' +
+          '<span class="bar-label"><span class="type-dot" data-color="' + esc(groupColor(group.id)) + '"></span><b>' + esc(group.name) + '</b></span>' +
+          '<span class="bar-track"><span class="bar-fill fill-' + esc(groupTone(group.id)) + '" data-pct="' + percent + '"></span></span>' +
           '<span class="bar-count">' + count + '</span>' +
           '</div>';
       }).join('');
@@ -1182,10 +1316,10 @@
       el.recentNodes.innerHTML = '<div class="bar-empty">暂无节点</div>';
     } else {
       el.recentNodes.innerHTML = recent.map(function (node) {
-        var region = REGION_META[node.region] || REGION_META.other;
+        var group = nodeGroup(node);
         var type = TYPE_META[node.type] || { label: node.type };
         var disabled = node.enabled ? '' : ' <span class="mini-badge">停用</span>';
-        var inner = '<span class="mini-avatar avatar-' + esc(node.region) + '">' + region.flag + '</span>' +
+        var inner = '<span class="mini-avatar avatar-' + esc(groupTone(nodeGroupId(node))) + '">' + esc(group ? groupEmoji(group.name) : '🌐') + '</span>' +
           '<span class="mini-main"><span class="mini-name">' + esc(node.name) + disabled + '</span>' +
           '<span class="mini-sub">' + esc(node.server) + ':' + esc(node.port) + '</span></span>' +
           '<span class="type-badge t-' + esc(node.type) + '"><span class="dot"></span>' + esc(type.label) + '</span>';
@@ -1215,11 +1349,6 @@
     el.sysHealth.classList.toggle('soft-ok', healthy);
 
     renderSubUrls();
-  }
-
-  function regionColor(key) {
-    var colors = { us: '#4f46e5', jp: '#db2777', hk: '#0891b2', relay: '#d97706', other: '#64748b' };
-    return colors[key] || colors.other;
   }
 
   function maskToken(url) {
@@ -1252,17 +1381,16 @@
     if (el.previewCopySub) el.previewCopySub.disabled = !url;
   }
 
-  var GROUP_REGIONS = ['us', 'jp', 'hk', 'relay'];
-
-  function isGroupRegion(region) {
-    return GROUP_REGIONS.indexOf(region) !== -1;
+  // 只有真实分组才谈「组内顺序」：未分组 / 全部分组没有独立顺序表
+  function isGroupFilter(value) {
+    return !!value && value !== 'all' && value !== UNGROUPED && !!groupById(value);
   }
 
   // 某分组的节点 id 顺序：独立顺序表优先，未收录的按全局顺序追加
-  function orderedRegionIds(region) {
-    var stored = ((state.config && state.config.regionOrder) || {})[region] || [];
+  function orderedGroupIds(groupId) {
+    var stored = ((state.config && state.config.regionOrder) || {})[groupId] || [];
     var ids = nodes()
-      .filter(function (node) { return node.region === region; })
+      .filter(function (node) { return nodeGroupId(node) === groupId; })
       .map(function (node) { return node.id; });
     var seen = {};
     var out = [];
@@ -1286,14 +1414,19 @@
     var query = state.query.trim().toLowerCase();
     return all.filter(function (node) {
       if (state.filterType !== 'all' && node.type !== state.filterType) return false;
-      if (state.filterRegion !== 'all' && node.region !== state.filterRegion) return false;
+      if (state.filterGroup === UNGROUPED) {
+        if (nodeGroup(node)) return false;
+      } else if (state.filterGroup !== 'all' && nodeGroupId(node) !== state.filterGroup) {
+        return false;
+      }
       if (!query) return true;
       var type = TYPE_META[node.type] || { label: node.type };
-      var region = REGION_META[node.region] || REGION_META.other;
+      var group = nodeGroup(node);
       var tagText = (node.tags || []).map(function (tag) {
         return TAG_META[tag] ? TAG_META[tag].label : tag;
       }).join(' ');
-      var haystack = [node.name, node.server, node.type, type.label, region.short, region.group, tagText].join(' ').toLowerCase();
+      var haystack = [node.name, node.server, node.type, type.label, group ? group.name : '未分组', tagText]
+        .join(' ').toLowerCase();
       return haystack.indexOf(query) !== -1;
     });
   }
@@ -1302,9 +1435,9 @@
   // 列表渲染与排序移动必须共用同一顺序，否则换错邻居导致乱序。
   function viewNodes() {
     var list = filteredNodes();
-    if (!state.query.trim() && isGroupRegion(state.filterRegion)) {
+    if (!state.query.trim() && isGroupFilter(state.filterGroup)) {
       var rank = {};
-      orderedRegionIds(state.filterRegion).forEach(function (id, i) { rank[id] = i; });
+      orderedGroupIds(state.filterGroup).forEach(function (id, i) { rank[id] = i; });
       var far = 1e9;
       list.sort(function (a, b) {
         var ra = rank[a.id] === undefined ? far : rank[a.id];
@@ -1328,7 +1461,7 @@
     var query = state.query.trim().toLowerCase();
     var filtered = viewNodes();
 
-    el.nodeCountLabel.textContent = query || state.filterType !== 'all' || state.filterRegion !== 'all'
+    el.nodeCountLabel.textContent = query || state.filterType !== 'all' || state.filterGroup !== 'all'
       ? filtered.length + ' / ' + all.length + ' 个节点'
       : '共 ' + all.length + ' 个节点';
 
@@ -1345,7 +1478,8 @@
   }
 
   function renderNodeRow(node, index, total, sortable) {
-    var region = REGION_META[node.region] || REGION_META.other;
+    var group = nodeGroup(node);
+    var tone = groupTone(nodeGroupId(node));
     var type = TYPE_META[node.type] || { label: node.type };
     var tags = (node.tags || []).filter(function (tag) { return TAG_META[tag]; });
     var tagHtml = tags.length
@@ -1388,7 +1522,7 @@
     return '<div class="' + rowClass + '" data-id="' + esc(node.id) + '"' + rowAttrs + '>' +
       '<div class="cell cell-check"><input type="checkbox" class="check-input" data-pick-id="' + esc(node.id) + '" aria-label="选择节点 ' + esc(node.name) + '"' + (checked ? ' checked' : '') + '></div>' +
       '<div class="cell cell-node">' +
-        '<span class="node-avatar avatar-' + esc(node.region) + '">' + region.flag + '</span>' +
+        '<span class="node-avatar avatar-' + esc(tone) + '">' + esc(group ? groupEmoji(group.name) : '🌐') + '</span>' +
         '<div class="node-main">' +
           '<div class="node-name"><span>' + esc(node.name) + '</span>' + badges + '</div>' +
           tagHtml +
@@ -1398,10 +1532,274 @@
         '<code>' + esc(node.server) + '</code><span class="port">:' + esc(node.port) + '</span>' +
       '</div>' +
       '<div class="cell cell-type"><span class="type-badge t-' + esc(node.type) + '"><span class="dot"></span>' + esc(type.label) + '</span></div>' +
-      '<div class="cell cell-region"><span class="region-chip">' + region.flag + ' ' + esc(region.short) + '</span></div>' +
+      '<div class="cell cell-region"><span class="region-chip" title="' + esc(group ? group.name : '未分组') + '">' +
+        (group ? esc(groupEmoji(group.name)) + ' ' + esc(groupShort(group.name)) : '🌐 未分组') + '</span></div>' +
       '<div class="cell cell-status">' + statusHtml + '</div>' +
       '<div class="cell cell-actions">' + actionsHtml + '</div>' +
     '</div>';
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* groups（策略组）                                                    */
+  /* ------------------------------------------------------------------ */
+
+  function newGroupId() {
+    return randomId('g_');
+  }
+
+  function renderGroups() {
+    if (!el.groupList) return;
+    if (!state.config) {
+      el.groupList.innerHTML = '<div class="group-empty">正在载入分组…</div>';
+      return;
+    }
+    var list = groups();
+    var all = nodes();
+    var ungrouped = all.filter(function (node) { return !nodeGroup(node); });
+
+    var cards = list.map(function (group, index) {
+      var members = all.filter(function (node) { return nodeGroupId(node) === group.id; });
+      var active = members.filter(function (node) { return node.enabled; }).length;
+      return '<article class="group-card' + (state.groupFormId === group.id ? ' is-editing' : '') + '">' +
+        '<span class="group-avatar avatar-' + esc(groupTone(group.id)) + '">' + esc(groupEmoji(group.name)) + '</span>' +
+        '<div class="group-main">' +
+          '<div class="group-title">' +
+            '<span class="group-name">' + esc(group.name) + '</span>' +
+            (isBuiltinGroup(group.id) ? '<span class="group-badge">内置</span>' : '') +
+            (!isBuiltinGroup(group.id) && group.icon ? '<span class="group-badge is-soft" title="' + esc(group.icon) + '">自定义图标</span>' : '') +
+          '</div>' +
+          '<div class="group-sub">' + members.length + ' 个节点 · ' + active + ' 个已启用</div>' +
+        '</div>' +
+        '<div class="group-actions">' +
+          '<button class="icon-btn" type="button" data-group-move="' + esc(group.id) + '" data-dir="-1" title="上移分组" aria-label="上移分组"' + (index === 0 ? ' disabled' : '') + '>' + icon('arrow-up') + '</button>' +
+          '<button class="icon-btn" type="button" data-group-move="' + esc(group.id) + '" data-dir="1" title="下移分组" aria-label="下移分组"' + (index === list.length - 1 ? ' disabled' : '') + '>' + icon('arrow-down') + '</button>' +
+          '<button class="btn btn-quiet btn-sm" type="button" data-group-edit="' + esc(group.id) + '">' + icon('pen') + '编辑</button>' +
+          '<button class="icon-btn group-delete" type="button" data-group-delete="' + esc(group.id) + '" title="删除分组" aria-label="删除分组 ' + esc(group.name) + '">' + icon('trash') + '</button>' +
+        '</div>' +
+      '</article>';
+    }).join('');
+
+    var rest = '<article class="group-card is-ungrouped">' +
+      '<span class="group-avatar avatar-other">🌐</span>' +
+      '<div class="group-main">' +
+        '<div class="group-title"><span class="group-name">未分组</span></div>' +
+        '<div class="group-sub">' + ungrouped.length + ' 个节点只出现在 🌍选择节点 里</div>' +
+      '</div>' +
+      '<div class="group-actions">' +
+        '<button class="btn btn-quiet btn-sm" type="button" data-group-view="' + UNGROUPED + '">查看节点</button>' +
+      '</div>' +
+    '</article>';
+
+    el.groupList.innerHTML = cards + rest;
+    if (el.groupSummary) {
+      el.groupSummary.textContent = list.length + ' 个分组 · ' + all.length + ' 个节点';
+    }
+  }
+
+  function groupErrorNode(key) {
+    return el.groupForm ? $('[data-error="' + key + '"]', el.groupForm) : null;
+  }
+
+  function clearGroupErrors() {
+    if (!el.groupForm) return;
+    $$('.field-error', el.groupForm).forEach(function (node) { node.textContent = ''; });
+    $$('.field.has-error', el.groupForm).forEach(function (node) { node.classList.remove('has-error'); });
+  }
+
+  function showGroupErrors(errors) {
+    if (!el.groupForm) return;
+    clearGroupErrors();
+    errors.forEach(function (error) {
+      var node = groupErrorNode(error.key);
+      if (!node) return;
+      node.textContent = error.message;
+      var field = node.closest('.field');
+      if (field) field.classList.add('has-error');
+    });
+    var first = errors.length ? groupErrorNode(errors[0].key) : null;
+    var field = first ? first.closest('.field') : null;
+    var input = field ? $('input', field) : null;
+    if (input) input.focus();
+  }
+
+  function setGroupBusy(busy) {
+    state.groupBusy = busy;
+    if (el.groupSave) {
+      el.groupSave.disabled = busy;
+      el.groupSave.classList.toggle('is-loading', busy);
+    }
+    if (el.groupSaveSpinner) el.groupSaveSpinner.hidden = !busy;
+    if (el.groupSaveLabel) el.groupSaveLabel.textContent = busy ? '保存中…' : (state.groupFormId ? '保存分组' : '创建分组');
+  }
+
+  function openGroupEditor(id) {
+    if (!el.groupForm) return;
+    if (!isOwner()) return;
+    if (!ensureWritable()) return;
+    var group = id ? groupById(id) : null;
+    if (id && !group) {
+      toast('分组不存在，请刷新后重试', 'error');
+      return;
+    }
+    if (!id && groups().length >= MAX_GROUPS) {
+      toast('分组数量已达上限 ' + MAX_GROUPS + ' 个', 'error');
+      return;
+    }
+    state.groupFormId = group ? group.id : null;
+    clearGroupErrors();
+    setField(el.groupName, group ? group.name : '');
+    setField(el.groupIcon, group ? group.icon || '' : '');
+    if (el.groupFormTitle) el.groupFormTitle.textContent = group ? '编辑分组' : '新建分组';
+    if (el.groupFormSub) {
+      el.groupFormSub.textContent = group
+        ? '改名或换图标会同步到订阅里的策略组，节点归属不变。'
+        : '新分组会作为独立策略组写入订阅，节点可以在节点管理里移入。';
+    }
+    setGroupBusy(false);
+    el.groupForm.hidden = false;
+    renderGroups();
+    window.setTimeout(function () {
+      el.groupName.focus();
+      el.groupName.select();
+    }, 40);
+  }
+
+  function closeGroupEditor() {
+    state.groupFormId = null;
+    if (el.groupForm) el.groupForm.hidden = true;
+    clearGroupErrors();
+    renderGroups();
+  }
+
+  function groupFormErrors(name, icon) {
+    var errors = [];
+    if (!name) {
+      errors.push({ key: 'groupName', message: '请填写分组名称' });
+    } else if (name.length > GROUP_NAME_MAX) {
+      errors.push({ key: 'groupName', message: '分组名称不能超过 ' + GROUP_NAME_MAX + ' 个字符' });
+    } else if (CONTROL_RE.test(name)) {
+      errors.push({ key: 'groupName', message: '分组名称不能包含控制字符' });
+    } else if (RESERVED_GROUP_NAMES.has(name)) {
+      errors.push({ key: 'groupName', message: '该名称与内置策略或应用策略组冲突' });
+    } else if (groups().some(function (group) {
+      return group.name.toLowerCase() === name.toLowerCase() && group.id !== state.groupFormId;
+    })) {
+      errors.push({ key: 'groupName', message: '分组名称已存在' });
+    } else if (nodes().some(function (node) {
+      return node.name.toLowerCase() === name.toLowerCase();
+    })) {
+      errors.push({ key: 'groupName', message: '已有同名节点，客户端会解析失败' });
+    }
+    if (icon && (icon.length > 256 || /[\s"'\\]/.test(icon) || icon.indexOf('https://') !== 0)) {
+      errors.push({ key: 'groupIcon', message: '图标需为 https:// 开头、不含空格与引号的地址' });
+    }
+    return errors;
+  }
+
+  async function submitGroupForm(event) {
+    if (event) event.preventDefault();
+    if (!isOwner() || state.mutating || state.groupBusy) return;
+    if (!ensureWritable()) return;
+    var editing = state.groupFormId;
+    var name = String(el.groupName.value || '').trim();
+    var icon = String(el.groupIcon.value || '').trim();
+    var errors = groupFormErrors(name, icon);
+    if (errors.length) {
+      showGroupErrors(errors);
+      return;
+    }
+
+    var list = groups().map(function (group) { return Object.assign({}, group); });
+    if (editing) {
+      list = list.map(function (group) {
+        return group.id === editing ? Object.assign({}, group, { name: name, icon: icon }) : group;
+      });
+    } else {
+      if (list.length >= MAX_GROUPS) {
+        showGroupErrors([{ key: 'groupName', message: '分组数量不能超过 ' + MAX_GROUPS + ' 个' }]);
+        return;
+      }
+      list.push({ id: newGroupId(), name: name, icon: icon });
+    }
+
+    setGroupBusy(true);
+    var ok = await saveNodes(nodes(), {
+      groups: list,
+      successMessage: editing ? '分组已更新' : '已创建分组「' + name + '」',
+      rerenderOnError: true
+    });
+    setGroupBusy(false);
+    if (ok) closeGroupEditor();
+  }
+
+  async function moveGroup(id, dir) {
+    if (!isOwner() || state.mutating || !ensureWritable()) return;
+    var list = groups().map(function (group) { return Object.assign({}, group); });
+    var index = -1;
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].id === id) index = i;
+    }
+    var target = index + dir;
+    if (index < 0 || target < 0 || target >= list.length) return;
+    var tmp = list[index];
+    list[index] = list[target];
+    list[target] = tmp;
+    await saveNodes(nodes(), {
+      groups: list,
+      successMessage: '分组顺序已更新',
+      rerenderOnError: true
+    });
+  }
+
+  function askDeleteGroup(id) {
+    var group = groupById(id);
+    if (!group || !isOwner() || !ensureWritable() || state.mutating) return;
+    var members = nodes().filter(function (node) { return nodeGroupId(node) === id; });
+    openConfirm({
+      title: '删除分组「' + group.name + '」？',
+      segments: [
+        { text: '策略组会从订阅中移除；其中的 ' },
+        { strong: true, text: String(members.length) + ' 个节点' },
+        { text: ' 不会被删除，而是变成「未分组」，只出现在 🌍选择节点 里。' }
+      ],
+      okLabel: '删除分组',
+      danger: true,
+      onOk: function () { return doDeleteGroup(id); }
+    });
+  }
+
+  async function doDeleteGroup(id) {
+    if (state.mutating) return;
+    var list = groups().filter(function (group) { return group.id !== id; });
+    if (!list.length) {
+      toast('至少需要保留一个分组；可以先新建一个再删除这个', 'error');
+      closeModal('generic');
+      return;
+    }
+    el.genericOk.disabled = true;
+    el.genericOk.textContent = '删除中…';
+    var ok = await saveNodes(nodes(), {
+      groups: list,
+      successMessage: '分组已删除，原节点已归入未分组',
+      rerenderOnError: true
+    });
+    el.genericOk.disabled = false;
+    el.genericOk.textContent = '删除分组';
+    if (ok) {
+      if (state.groupFormId === id) closeGroupEditor();
+      closeModal('generic');
+    }
+  }
+
+  /* 从分组卡片跳到节点列表：按该分组过滤，未分组走 UNGROUPED 分支 */
+  function focusGroup(value) {
+    state.query = '';
+    if (el.nodeSearch) el.nodeSearch.value = '';
+    state.filterType = 'all';
+    if (el.filterType) el.filterType.value = 'all';
+    state.filterGroup = value;
+    if (el.filterGroup) el.filterGroup.value = value;
+    switchView('nodes');
   }
 
   /* ---- selection & bulk actions ---- */
@@ -1550,20 +1948,22 @@
     });
   }
 
-  function bulkMoveRegion() {
+  function bulkMoveGroup() {
     if (!ensureWritable() || state.mutating) return;
-    var region = el.bulkRegion.value;
-    if (!region) return;
+    var value = el.bulkGroup.value;
+    if (!value) return;
+    var groupId = value === UNGROUPED ? '' : value;
+    var group = groupId ? groupById(groupId) : null;
+    if (groupId && !group) return;
     var ids = Array.from(state.selected);
     if (!ids.length) return;
-    var meta = REGION_META[region] || REGION_META.other;
     var previous = nodes();
     var next = previous.map(function (node) {
-      return state.selected.has(node.id) ? Object.assign({}, node, { region: region }) : node;
+      return state.selected.has(node.id) ? Object.assign({}, node, { groupId: groupId }) : node;
     });
     setBulkBusy(true);
     saveNodes(next, {
-      successMessage: '已将 ' + ids.length + ' 个节点移至「' + meta.group + '」',
+      successMessage: '已将 ' + ids.length + ' 个节点移至「' + (group ? group.name : '仅选择列表') + '」',
       successAction: {
         label: '撤销',
         run: function () { undoSnapshot(previous, '已恢复节点原分组'); }
@@ -1573,7 +1973,7 @@
       setBulkBusy(false);
       // 失败时保留下拉选择，方便用户直接重试
       if (ok) {
-        el.bulkRegion.value = '';
+        el.bulkGroup.value = '';
         clearSelection();
       }
     });
@@ -1691,8 +2091,8 @@
     setRowBusy(button, true);
 
     // 按分组筛选时：只改该分组的独立顺序表，不动全局顺序，其他分组与 🌍组不受影响
-    if (isGroupRegion(state.filterRegion)) {
-      var order = orderedRegionIds(state.filterRegion);
+    if (isGroupFilter(state.filterGroup)) {
+      var order = orderedGroupIds(state.filterGroup);
       var idA = view[viewIndex].id;
       var idB = view[viewTarget].id;
       var pa = order.indexOf(idA);
@@ -1705,7 +2105,7 @@
       order[pa] = order[pb];
       order[pb] = tmp;
       var regionOrder = Object.assign({}, (state.config && state.config.regionOrder) || {});
-      regionOrder[state.filterRegion] = order;
+      regionOrder[state.filterGroup] = order;
       var okGroup = await saveNodes(nodes(), {
         regionOrder: regionOrder,
         successMessage: '分组内顺序已更新，不影响其他分组',
@@ -1738,7 +2138,7 @@
 
   function switchView(view) {
     if (!VIEW_META[view]) view = 'overview';
-    if (view === 'users' && !isOwner()) view = 'overview';
+    if ((view === 'users' || view === 'groups') && !isOwner()) view = 'overview';
     state.view = view;
     el.navItems.forEach(function (button) {
       var active = button.dataset.view === view;
@@ -1754,6 +2154,7 @@
     document.body.classList.toggle('has-bulk', view === 'nodes' && state.selected.size > 0 && !el.app.hidden);
     if (view === 'preview' && (!state.preview || state.previewDirty)) loadPreview();
     if (view === 'nodes') renderNodeList();
+    if (view === 'groups') renderGroups();
     if (view === 'overview') renderOverview();
     if (view === 'users') loadUsers();
     if (view === 'settings') {
@@ -2324,12 +2725,11 @@
     }
     el.userScopeList.innerHTML = list.map(function (node) {
       var type = TYPE_META[node.type] || { label: node.type };
-      var region = REGION_META[node.region] || REGION_META.other;
       var on = allNodes || !!selected[node.id];
       return '<label class="scope-item">' +
         '<input class="check-input" type="checkbox" value="' + esc(node.id) + '"' + (on ? ' checked' : '') + (allNodes ? ' disabled' : '') + '>' +
         '<span class="scope-name">' + esc(node.name) + '</span>' +
-        '<span class="scope-meta">' + esc(region.short) + ' · ' + esc(type.label) + '</span>' +
+        '<span class="scope-meta">' + esc(groupShort(groupLabel(node))) + ' · ' + esc(type.label) + '</span>' +
         '</label>';
     }).join('');
   }
@@ -2589,6 +2989,7 @@
         if (opts.defaults) body.defaults = opts.defaults;
         if (opts.subscription) body.subscription = opts.subscription;
         if (opts.regionOrder) body.regionOrder = opts.regionOrder;
+        if (opts.groups) body.groups = opts.groups;
         if (opts.providerBase !== undefined) body.providerBase = opts.providerBase;
       }
       var data = await request(owner ? '/api/config' : '/api/nodes', {
@@ -2794,6 +3195,7 @@
       app: 'transit-hub',
       v: 1,
       exportedAt: new Date().toISOString(),
+      groups: groups(),
       nodes: nodes(),
       defaults: currentDefaults(),
       regionOrder: (state.config && state.config.regionOrder) || {},
@@ -2848,6 +3250,7 @@
     el.genericOk.disabled = true;
     el.genericOk.textContent = '导入中…';
     var ok = await saveNodes(parsed.nodes, {
+      groups: Array.isArray(parsed.groups) && parsed.groups.length ? parsed.groups : undefined,
       defaults: parsed.defaults && typeof parsed.defaults === 'object' ? parsed.defaults : {},
       regionOrder: parsed.regionOrder && typeof parsed.regionOrder === 'object' ? parsed.regionOrder : {},
       subscription: parsed.subscription && typeof parsed.subscription === 'object' ? parsed.subscription : {},
@@ -3205,11 +3608,12 @@
     return [node.type, String(node.server || '').toLowerCase(), node.port, secret].join('|');
   }
 
-  function guessShareRegion(text) {
+  // 从链接文本猜分组：只猜内置组的 id，猜不到就交给「未分组」
+  function guessShareGroup(text) {
     for (var i = 0; i < REGION_HINTS.length; i++) {
       if (REGION_HINTS[i].re.test(text)) return REGION_HINTS[i].key;
     }
-    return 'other';
+    return '';
   }
 
   function shareNameBase(raw, node) {
@@ -3254,7 +3658,7 @@
         }
         known.add(signature);
         parsed.node.name = uniqueShareName(shareNameBase(parsed.title, parsed.node), usedNames);
-        parsed.node.region = guessShareRegion([
+        parsed.node.groupId = guessShareGroup([
           parsed.title, parsed.node.name, parsed.node.server,
           parsed.node.wsHost, parsed.node.servername
         ].join(' '));
@@ -3355,10 +3759,10 @@
     copyText(link, '分享链接已复制');
   }
 
-  function linkRegionFor(item) {
-    var override = el.linksRegion ? el.linksRegion.value : 'auto';
-    var region = override === 'auto' ? item.node.region : override;
-    return REGION_META[region] || REGION_META.other;
+  function linkGroupFor(item) {
+    var override = el.linksGroup ? el.linksGroup.value : 'auto';
+    var value = override === 'auto' ? nodeGroupId(item.node) : override;
+    return value === UNGROUPED ? null : groupById(value);
   }
 
   function renderLinksFeedback(overflow) {
@@ -3407,16 +3811,16 @@
         '</div>';
     } else {
       el.linksPreview.innerHTML = items.map(function (item, index) {
-        var region = linkRegionFor(item);
+        var group = linkGroupFor(item);
         var type = TYPE_META[item.node.type] || { label: item.node.type };
-        var meta = item.node.server + ':' + item.node.port + ' · ' + region.group;
+        var meta = item.node.server + ':' + item.node.port + ' · ' + (group ? group.name : '仅选择列表');
         return '<div class="link-item">' +
           '<span class="link-kind t-' + esc(item.node.type) + '">' + esc(type.label) + '</span>' +
           '<span class="link-main">' +
             '<span class="link-name">' + esc(item.node.name) + '</span>' +
             '<span class="link-meta">' + esc(meta) + '</span>' +
           '</span>' +
-          '<span class="link-region">' + (item.node.region === 'other' && el.linksRegion.value === 'auto' ? '未分组' : region.short) + '</span>' +
+          '<span class="link-region">' + (group ? esc(groupEmoji(group.name)) + ' ' + esc(groupShort(group.name)) : '未分组') + '</span>' +
           '<button class="icon-btn link-remove" type="button" data-link-remove="' + index + '" title="移除" aria-label="移除 ' + esc(item.node.name) + '">' + icon('close') + '</button>' +
         '</div>';
       }).join('');
@@ -3499,10 +3903,10 @@
       toast('最多还能导入 ' + Math.max(room, 0) + ' 个节点', 'error');
       return;
     }
-    var override = el.linksRegion.value;
+    var override = el.linksGroup.value;
     var additions = items.map(function (item) {
       var copy = Object.assign({}, item.node);
-      if (override !== 'auto') copy.region = override;
+      if (override !== 'auto') copy.groupId = override === UNGROUPED ? '' : override;
       copy.id = newNodeId();
       copy.enabled = true;
       copy.showInMain = true;
@@ -3638,7 +4042,7 @@
     clearFormErrors();
     setField(el.fieldName, '');
     setField(el.fieldServer, '');
-    setField(el.fieldRegion, 'hk');
+    renderGroupOptions();
     setTags([]);
     setSwitch(el.fieldEnabled, true);
     setSwitch(el.fieldShowMain, true);
@@ -3691,7 +4095,7 @@
       setField(el.fieldName, node.name);
       setField(el.fieldServer, node.server);
       setField(el.fieldPort, node.port);
-      setField(el.fieldRegion, node.region || 'other');
+      setField(el.fieldGroup, nodeGroupId(node) || UNGROUPED);
       setTags(node.tags || []);
       setSwitch(el.fieldEnabled, node.enabled !== false);
       setSwitch(el.fieldShowMain, node.showInMain !== false);
@@ -3905,6 +4309,8 @@
     });
     if (name && RESERVED_NAMES.has(name)) {
       errors.push({ key: 'name', message: '该名称与策略组或内置策略重名，请更换' });
+    } else if (name && groups().some(function (group) { return group.name.toLowerCase() === nameLower; })) {
+      errors.push({ key: 'name', message: '该名称与分组同名，客户端会解析失败' });
     } else if (name && duplicate) {
       errors.push({ key: 'name', message: '节点名称已存在，请使用其他名称' });
     }
@@ -3916,14 +4322,14 @@
       errors.push({ key: 'port', message: '端口必须是 1 - 65535 之间的整数' });
     }
 
-    var region = el.fieldRegion.value;
-    if (REGION_ORDER.indexOf(region) === -1) region = 'other';
+    var groupValue = el.fieldGroup ? el.fieldGroup.value : UNGROUPED;
+    var groupId = groupValue && groupValue !== UNGROUPED && groupById(groupValue) ? groupValue : '';
     var node = {
       name: name,
       type: type,
       server: server,
       port: port,
-      region: region,
+      groupId: groupId,
       enabled: getSwitch(el.fieldEnabled),
       showInMain: getSwitch(el.fieldShowMain),
       tags: selectedTags()
@@ -4075,9 +4481,9 @@
       name: MAIN_GROUP,
       count: enabled.filter(function (node) { return node.showInMain !== false; }).length
     }];
-    GROUP_REGIONS.forEach(function (region) {
-      var count = enabled.filter(function (node) { return node.region === region; }).length;
-      if (count) defs.push({ name: REGION_META[region].group, count: count });
+    groups().forEach(function (group) {
+      var count = enabled.filter(function (node) { return nodeGroupId(node) === group.id; }).length;
+      if (count) defs.push({ name: group.name, count: count });
     });
     APP_GROUPS.forEach(function (app) {
       defs.push({ name: app.name, count: appGroupCount(app), unit: ' 个标记节点' });
@@ -4516,10 +4922,10 @@
   function resetFilters() {
     state.query = '';
     state.filterType = 'all';
-    state.filterRegion = 'all';
+    state.filterGroup = 'all';
     if (el.nodeSearch) el.nodeSearch.value = '';
     if (el.filterType) el.filterType.value = 'all';
-    if (el.filterRegion) el.filterRegion.value = 'all';
+    if (el.filterGroup) el.filterGroup.value = 'all';
     renderNodeList();
   }
 
@@ -4615,13 +5021,39 @@
       state.filterType = el.filterType.value;
       renderNodeList();
     });
-    on(el.filterRegion, 'change', function () {
-      state.filterRegion = el.filterRegion.value;
+    on(el.filterGroup, 'change', function () {
+      state.filterGroup = el.filterGroup.value;
       renderNodeList();
     });
     [el.filterReset, el.emptyReset].forEach(function (button) {
       button.addEventListener('click', resetFilters);
     });
+
+    on(el.groupAdd, 'click', function () { openGroupEditor(null); });
+    on(el.groupCancel, 'click', closeGroupEditor);
+    on(el.groupForm, 'submit', submitGroupForm);
+    on(el.groupForm, 'input', clearGroupErrors);
+    if (el.groupList) {
+      on(el.groupList, 'click', function (event) {
+        var move = event.target.closest('[data-group-move]');
+        if (move) {
+          if (!move.disabled) moveGroup(move.dataset.groupMove, Number(move.dataset.dir));
+          return;
+        }
+        var edit = event.target.closest('[data-group-edit]');
+        if (edit) {
+          openGroupEditor(edit.dataset.groupEdit);
+          return;
+        }
+        var remove = event.target.closest('[data-group-delete]');
+        if (remove) {
+          askDeleteGroup(remove.dataset.groupDelete);
+          return;
+        }
+        var view = event.target.closest('[data-group-view]');
+        if (view) focusGroup(view.dataset.groupView);
+      });
+    }
 
     on(el.nodeList, 'click', function (event) {
       var pick = event.target.closest('[data-pick-id]');
@@ -4693,9 +5125,9 @@
       });
     }
     if (el.bulkClear) on(el.bulkClear, 'click', clearSelection);
-    if (el.bulkRegion) {
-      on(el.bulkRegion, 'change', function () {
-        if (el.bulkRegion.value) bulkMoveRegion();
+    if (el.bulkGroup) {
+      on(el.bulkGroup, 'change', function () {
+        if (el.bulkGroup.value) bulkMoveGroup();
       });
     }
 
@@ -4905,8 +5337,8 @@
         state.linksTimer = window.setTimeout(parseLinksInput, 200);
       });
     }
-    if (el.linksRegion) {
-      on(el.linksRegion, 'change', function () {
+    if (el.linksGroup) {
+      on(el.linksGroup, 'change', function () {
         if (el.linksInput.value.trim()) parseLinksInput();
         else renderLinksResults();
       });

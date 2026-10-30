@@ -209,6 +209,9 @@
       <button class="nav-item" type="button" data-view="nodes" aria-label="节点管理">
         <svg class="icon"><use href="#i-server"></use></svg><span class="nav-text">节点管理</span><span class="nav-badge" id="nav-count">0</span>
       </button>
+      <button class="nav-item" type="button" data-view="groups" aria-label="分组管理" data-owner-only>
+        <svg class="icon"><use href="#i-layers"></use></svg><span class="nav-text">分组管理</span>
+      </button>
       <button class="nav-item" type="button" data-view="preview" aria-label="订阅预览">
         <svg class="icon"><use href="#i-code"></use></svg><span class="nav-text">订阅预览</span>
       </button>
@@ -456,13 +459,8 @@
               <svg class="icon"><use href="#i-chevron"></use></svg>
             </div>
             <div class="select-wrap">
-              <select id="filter-region" aria-label="按分组筛选">
+              <select id="filter-group" aria-label="按分组筛选">
                 <option value="all">全部分组</option>
-                <option value="us">欧美节点</option>
-                <option value="jp">日韩节点</option>
-                <option value="hk">港台节点</option>
-                <option value="relay">中转节点</option>
-                <option value="other">未分组</option>
               </select>
               <svg class="icon"><use href="#i-chevron"></use></svg>
             </div>
@@ -504,6 +502,54 @@
             <button class="btn btn-secondary btn-sm" type="button" id="empty-reset">清除筛选</button>
           </div>
         </div>
+      </section>
+
+      <section class="view" data-view-panel="groups" hidden>
+        <div class="page-head">
+          <div>
+            <span class="eyebrow">Groups</span>
+            <h1>分组管理</h1>
+            <p class="page-sub">每个分组都会作为独立策略组写入订阅；改名、换图标或调整顺序都不会改动节点数据。</p>
+          </div>
+          <div class="page-actions">
+            <span class="soft-pill" id="group-summary">0 个分组</span>
+            <button class="btn btn-primary" type="button" id="group-add"><svg class="icon"><use href="#i-plus"></use></svg>新建分组</button>
+          </div>
+        </div>
+
+        <form class="panel group-form" id="group-form" hidden novalidate>
+          <div class="group-form-head">
+            <b id="group-form-title">新建分组</b>
+            <span id="group-form-sub">新分组会作为独立策略组写入订阅。</span>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label for="group-name">分组名称</label>
+              <input id="group-name" maxlength="40" placeholder="例如：🎮 游戏节点" autocomplete="off" spellcheck="false">
+              <div class="field-error" data-error="groupName"></div>
+            </div>
+            <div class="field">
+              <label for="group-icon">图标地址（可选）</label>
+              <input id="group-icon" placeholder="https://…/icon.png" autocomplete="off" spellcheck="false">
+              <div class="field-error" data-error="groupIcon"></div>
+            </div>
+          </div>
+          <div class="group-form-foot">
+            <span class="field-hint">名称开头的 emoji 会作为控制台里的分组头像；图标地址只影响客户端的策略组图标。</span>
+            <div class="group-form-actions">
+              <button class="btn btn-quiet" type="button" id="group-cancel">取消</button>
+              <button class="btn btn-primary" type="submit" id="group-save">
+                <span class="spinner" id="group-save-spinner" hidden></span><span class="btn-label" id="group-save-label">创建分组</span>
+              </button>
+            </div>
+          </div>
+        </form>
+
+        <section class="panel group-panel">
+          <div class="group-list" id="group-list">
+            <div class="group-empty">正在载入分组…</div>
+          </div>
+        </section>
       </section>
 
       <section class="view" data-view-panel="preview" hidden>
@@ -797,13 +843,8 @@
         <button class="bulk-btn" type="button" data-bulk="enable"><svg class="icon"><use href="#i-power"></use></svg>启用</button>
         <button class="bulk-btn" type="button" data-bulk="disable"><svg class="icon"><use href="#i-power"></use></svg>停用</button>
         <div class="select-wrap bulk-select">
-          <select id="bulk-region" aria-label="移动到分组">
+          <select id="bulk-group" aria-label="移动到分组">
             <option value="">移动到分组…</option>
-            <option value="us">🇺🇸 欧美节点</option>
-            <option value="jp">🇯🇵 日韩节点</option>
-            <option value="hk">🇭🇰 港台节点</option>
-            <option value="relay">📶 中转节点</option>
-            <option value="other">🌐 仅选择列表</option>
           </select>
           <svg class="icon"><use href="#i-chevron"></use></svg>
         </div>
@@ -845,18 +886,12 @@
             </div>
           </div>
           <div class="field">
-            <label for="f-region">所属分组 <span class="req">*</span></label>
+            <label for="f-group">所属分组 <span class="req">*</span></label>
             <div class="select-wrap select-block">
-              <select id="f-region">
-                <option value="hk">🇭🇰 港台节点</option>
-                <option value="jp">🇯🇵 日韩节点</option>
-                <option value="us">🇺🇸 欧美节点</option>
-                <option value="relay">📶 中转节点</option>
-                <option value="other">🌐 仅加入选择列表</option>
-              </select>
+              <select id="f-group"></select>
               <svg class="icon"><use href="#i-chevron"></use></svg>
             </div>
-            <div class="field-hint">分组决定节点在客户端策略组中的默认归属。</div>
+            <div class="field-hint">分组决定节点在客户端策略组中的归属，可在「分组管理」里增删改。</div>
           </div>
           <div class="field-row">
             <div class="field">
@@ -1203,15 +1238,10 @@
         </div>
         <div class="links-options">
           <div class="inline-field">
-            <label for="links-region">归入分组</label>
+            <label for="links-group">归入分组</label>
             <div class="select-wrap">
-              <select id="links-region">
+              <select id="links-group">
                 <option value="auto">自动识别</option>
-                <option value="hk">🇭🇰 港台节点</option>
-                <option value="jp">🇯🇵 日韩节点</option>
-                <option value="us">🇺🇸 欧美节点</option>
-                <option value="relay">📶 中转节点</option>
-                <option value="other">🌐 仅选择列表</option>
               </select>
               <svg class="icon"><use href="#i-chevron"></use></svg>
             </div>

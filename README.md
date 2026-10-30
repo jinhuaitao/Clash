@@ -9,7 +9,7 @@
 <img src="https://img.shields.io/badge/Cloudflare-Workers-f6821f?logo=cloudflare&logoColor=white" alt="Cloudflare Workers">
 <img src="https://img.shields.io/badge/存储-KV-2b2f36?logo=cloudflare&logoColor=white" alt="Cloudflare KV">
 <img src="https://img.shields.io/badge/运行时依赖-0-brightgreen" alt="零依赖">
-<img src="https://img.shields.io/badge/version-2.8.0-4f46e5" alt="v2.8.0">
+<img src="https://img.shields.io/badge/version-2.9.0-4f46e5" alt="v2.9.0">
 <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT">
 
 </div>
@@ -31,6 +31,7 @@
 | :--- | :--- |
 | **订阅** | `/?token=…` 直接输出 Clash / Mihomo 可用的 YAML，带 `subscription-userinfo` 与更新间隔；成员另有专属链接 |
 | **节点** | 增删改、启停、↑↓ 排序、搜索与协议 / 分组筛选、Shift 连选、批量操作 + 一键撤销 |
+| **分组** | 自定义策略组：新建、改名、换图标、调顺序、删除；节点随分组走，改名不影响归属 |
 | **导入导出** | VLESS / Hysteria2 / Trojan / VMess / SS 分享链接批量互转 |
 | **预览** | 实时 YAML、分组统计、全文搜索（命中计数与跳转）、复制 / 下载 |
 | **账号** | 所有者 / 成员两级；成员只能管自己的节点，共享节点由所有者分配（上限 20 人） |
@@ -115,7 +116,7 @@ npx wrangler secret put ADMIN_TOKEN     # 16 位以上的随机字符串
 
 ```bash
 npm install
-npm test           # 零依赖接口回归，274 项断言，不联网
+npm test           # 零依赖接口回归，300 项断言，不联网
 npm run build      # 把 admin/ 内联进 src/worker.js，产出 dist/1.js
 npm run dev        # 先构建再 wrangler dev → http://127.0.0.1:8787/admin
 ```
@@ -154,7 +155,7 @@ wrangler.toml          Worker 配置 + KV / 限流绑定声明
 | POST | `/api/setup` | 公开 | 创建第一个管理员；**未配 `ADMIN_TOKEN` 时 `503`**，已初始化返回 `409` |
 | POST | `/api/login` | 公开 | 用户名或邮箱 + 密码 |
 | GET | `/api/config` | 会话 | 配置与运行状态；成员的响应只含其可见节点，`config.authToken` 不回显 |
-| PUT | `/api/config` | 所有者 | 整体保存，`rev` 乐观锁 |
+| PUT | `/api/config` | 所有者 | 整体保存（含 `groups` 分组表），`rev` 乐观锁 |
 | PUT | `/api/nodes` | 成员 | 保存个人节点，`personalRev` 乐观锁，id 约束在 `p_` 命名空间 |
 | GET | `/api/preview` | 会话 | 当前配置渲染出的 YAML |
 | POST | `/api/password` | 会话 | 自助改密，成功后返回新会话令牌 |
@@ -171,15 +172,19 @@ wrangler.toml          Worker 配置 + KV / 限流绑定声明
   "authToken": "…", "providerBase": "",
   "defaults": { "vlessUuid": "…", "vlessPublicKey": "…", "vlessServername": "…", "vlessPort": 443 },
   "subscription": { "totalGB": 500, "expire": "2026-12-31" },
-  "regionOrder": { "hk": ["n_xxx"] },
+  "groups": [{ "id": "hk", "name": "🇭🇰港台节点", "icon": "https://…/Hong_Kong.png" },
+             { "id": "g_1f2e…", "name": "🎮 游戏节点", "icon": "" }],
+  "regionOrder": { "hk": ["n_xxx"], "g_1f2e…": ["n_yyy"] },
   "nodes": [{ "id": "n_xxx", "name": "HK-01", "type": "vless", "server": "example.com",
-              "port": 443, "region": "hk", "enabled": true, "uuid": "…", "reality": true }]
+              "port": 443, "groupId": "hk", "enabled": true, "uuid": "…", "reality": true }]
 }
 ```
 
 `config` 键存上面这份；`users` 键单独存账号（`role` / `scope` / `passwordSalt` / `passwordHash` / `passwordIterations` / `version`）与会话签名用的 `secret`。`rev` 用于并发保护，不一致返回 `409`。令牌只存在 KV —— YAML、备份文件与 `/api/config` 响应都不带 `authToken`，完整令牌只出现在 `meta.subUrl`。
 
-字段残缺或类型不对的节点（缺 UUID、缺密码、非法端口、混入 `null`）会在渲染时被跳过，不会把 `"undefined"` 写进订阅，也不会让整条订阅 500。`showInMain: false` 表示不在「🌍选择节点」里列出；`skipCertVerify` 默认 `false`。
+**分组**：`groups` 是策略组的唯一来源，数组顺序就是订阅里的策略组顺序，最多 24 个。内置四组的 `id` 沿用旧版的 `region` 键（`us` / `jp` / `hk` / `relay`），所以历史节点与 `regionOrder` 都不需要迁移；自定义分组用 `g_` 前缀的新 id。节点只记 `groupId`，改名、换图标、调顺序都不动节点数据；分组被删除时，其中的节点自动变成「未分组」，只出现在「🌍选择节点」里。`groups` 缺失或为空时按内置四组处理，订阅输出与 2.8 及更早版本逐字一致。
+
+字段残缺或类型不对的节点（缺 UUID、缺密码、非法端口、混入 `null`）会在渲染时被跳过，不会把 `"undefined"` 写进订阅，也不会让整条订阅 500。`showInMain: false` 表示不在「🌍选择节点」里列出；`skipCertVerify` 默认 `false`。节点名与分组名互斥 —— Clash 里 proxy 与 proxy-group 同名会让整份配置失效，写入与渲染两处都会拦。
 
 </details>
 

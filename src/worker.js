@@ -4,7 +4,7 @@ export default {
   },
 }
 
-const VERSION = '2.8.0'
+const VERSION = '2.9.0'
 const CONFIG_KEY = 'config'
 const USERS_KEY = 'users'
 const MAX_NODES = 300
@@ -41,14 +41,34 @@ const RESERVED_NAMES = new Set([
   'GLOBAL',
 ])
 
-const REGION_META = {
-  us: { group: '🇺🇸欧美节点', icon: 'https://fastly.jsdelivr.net/gh/Koolson/Qure/IconSet/Color/United_States.png' },
-  jp: { group: '🇯🇵日韩节点', icon: 'https://fastly.jsdelivr.net/gh/Koolson/Qure/IconSet/Color/Japan.png' },
-  hk: { group: '🇭🇰港台节点', icon: 'https://fastly.jsdelivr.net/gh/Koolson/Qure/IconSet/Color/Hong_Kong.png' },
-  relay: { group: '📶中转节点', icon: 'https://fastly.jsdelivr.net/gh/Koolson/Qure/IconSet/Color/Relay.png' },
-}
-const REGION_ORDER = ['us', 'jp', 'hk', 'relay']
-const REGIONS = ['us', 'jp', 'hk', 'relay', 'other']
+/* 分组名可以叫「🇭🇰港台节点」这类内置分组名（它们由分组表本身去重保证唯一），
+   但不能占用全局选择组、应用策略组与内置策略的名字，否则 YAML 里会出现重名策略组 */
+const RESERVED_GROUP_NAMES = new Set([
+  MAIN_GROUP,
+  '💬ChatGPT',
+  'ⒼGoogle',
+  '📺YOUTUBE',
+  '📲 电报信息',
+  'DIRECT',
+  'REJECT',
+  'REJECT-DROP',
+  'PASS',
+  'GLOBAL',
+])
+
+/* 分组（策略组）由控制台维护，存在 config.groups 里。
+   内置四组的 id 直接沿用旧版的 region 键（us / jp / hk / relay），
+   因此历史节点、regionOrder 与订阅输出都不需要迁移；自定义分组用 g_ 前缀的新 id。
+   节点只记 groupId，分组改名 / 换图标 / 调顺序都不会动到节点数据。 */
+const DEFAULT_GROUPS = [
+  { id: 'us', name: '🇺🇸欧美节点', icon: 'https://fastly.jsdelivr.net/gh/Koolson/Qure/IconSet/Color/United_States.png' },
+  { id: 'jp', name: '🇯🇵日韩节点', icon: 'https://fastly.jsdelivr.net/gh/Koolson/Qure/IconSet/Color/Japan.png' },
+  { id: 'hk', name: '🇭🇰港台节点', icon: 'https://fastly.jsdelivr.net/gh/Koolson/Qure/IconSet/Color/Hong_Kong.png' },
+  { id: 'relay', name: '📶中转节点', icon: 'https://fastly.jsdelivr.net/gh/Koolson/Qure/IconSet/Color/Relay.png' },
+]
+const MAX_GROUPS = 24
+const GROUP_ID_RE = /^[A-Za-z0-9_-]{1,64}$/
+const GROUP_NAME_MAX = 40
 const TYPES = ['vless', 'hysteria2', 'trojan', 'vmess', 'ss']
 const TAGS = ['chatgpt', 'google', 'youtube', 'telegram']
 /* 写入校验与 YAML 渲染共用同一套白名单，避免两处规则漂移 */
@@ -57,30 +77,32 @@ const FINGERPRINTS = ['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', '
 const CIPHERS = ['aes-128-gcm', 'aes-256-gcm', 'chacha20-ietf-poly1305', 'xchacha20-ietf-poly1305']
 const FLOWS = ['', 'xtls-rprx-vision']
 
+/* 应用策略组的默认成员：bases 写分组 id（MAIN_GROUP 表示全局选择组），
+   渲染时再换成当前分组名 —— 分组可以改名，写死名字会让策略组引用失效 */
 const APP_GROUPS = [
   {
     key: 'chatgpt',
     name: '💬ChatGPT',
     icon: 'https://fastly.jsdelivr.net/gh/Koolson/Qure/IconSet/Color/ChatGPT.png',
-    bases: ['🇺🇸欧美节点'],
+    bases: ['us'],
   },
   {
     key: 'google',
     name: 'ⒼGoogle',
     icon: 'https://fastly.jsdelivr.net/gh/Koolson/Qure/IconSet/Color/Google_Search.png',
-    bases: ['🇺🇸欧美节点', '🇯🇵日韩节点', '📶中转节点'],
+    bases: ['us', 'jp', 'relay'],
   },
   {
     key: 'youtube',
     name: '📺YOUTUBE',
     icon: 'https://fastly.jsdelivr.net/gh/Koolson/Qure/IconSet/Color/YouTube.png',
-    bases: ['🇺🇸欧美节点', '🇯🇵日韩节点', '🇭🇰港台节点', '📶中转节点'],
+    bases: ['us', 'jp', 'hk', 'relay'],
   },
   {
     key: 'telegram',
     name: '📲 电报信息',
     icon: 'https://fastly.jsdelivr.net/gh/Koolson/Qure/IconSet/Color/Telegram.png',
-    bases: [MAIN_GROUP, '🇺🇸欧美节点', '🇯🇵日韩节点', '🇭🇰港台节点', '📶中转节点'],
+    bases: [MAIN_GROUP, 'us', 'jp', 'hk', 'relay'],
   },
 ]
 
@@ -695,7 +717,7 @@ function filterConfigForPrincipal(config, principal) {
     ...config,
     nodes,
     defaults: {},
-    regionOrder: reconcileRegionOrder(config.regionOrder, nodes),
+    regionOrder: reconcileRegionOrder(config.regionOrder, nodes, resolveGroups(config)),
   }
 }
 
@@ -808,7 +830,18 @@ function kvBinding(env) {
 }
 
 function emptyConfig() {
-  return { v: 1, rev: 0, updatedAt: null, nodes: [], defaults: {}, regionOrder: {}, subscription: {}, authToken: '', providerBase: '' }
+  return {
+    v: 1,
+    rev: 0,
+    updatedAt: null,
+    groups: defaultGroups(),
+    nodes: [],
+    defaults: {},
+    regionOrder: {},
+    subscription: {},
+    authToken: '',
+    providerBase: '',
+  }
 }
 
 const PROVIDER_BASE_DEFAULT = 'https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release'
@@ -852,6 +885,118 @@ function sanitizeDefaults(input) {
   const port = Number(input.vlessPort)
   if (Number.isInteger(port) && port >= 1 && port <= 65535) out.vlessPort = port
   return out
+}
+
+/* ------------------------------------------------------------------ */
+/* groups                                                              */
+/* ------------------------------------------------------------------ */
+
+function defaultGroups() {
+  return DEFAULT_GROUPS.map(group => ({ id: group.id, name: group.name, icon: group.icon }))
+}
+
+/* 分组图标是可选的 https 图片地址，会原样拼进 YAML 的 icon 字段：
+   只接受 https、无空白与控制字符、无引号反斜杠的短 URL，其余一律丢弃。 */
+function sanitizeGroupIcon(input) {
+  const value = typeof input === 'string' ? input.trim() : ''
+  if (!value || value.length > 256) return ''
+  if (/[\s\u0000-\u001f\u007f"'\\]/.test(value)) return ''
+  if (!/^https:\/\/[A-Za-z0-9._~:/@!$&*+,;=%?#[\]-]+$/.test(value)) return ''
+  return value
+}
+
+function validateGroupIcon(value) {
+  if (value === undefined || value === null || value === '') return ''
+  if (typeof value !== 'string') throw new HttpError(400, '分组图标格式不正确', 'groupIcon')
+  const cleaned = sanitizeGroupIcon(value)
+  if (!cleaned) {
+    throw new HttpError(400, '分组图标需为 https:// 开头、不含空格与引号且不超过 256 个字符', 'groupIcon')
+  }
+  return cleaned
+}
+
+/* 读路径宽松：坏项逐条丢弃，id 与名称去重，超量截断，绝不抛错。
+   KV 里被手工改坏或旧版本写入的分组不能把整份订阅拖成 500。 */
+function sanitizeGroups(input) {
+  if (!Array.isArray(input)) return []
+  const out = []
+  const ids = new Set()
+  const names = new Set()
+  for (const raw of input) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue
+    if (typeof raw.id !== 'string' || !GROUP_ID_RE.test(raw.id)) continue
+    if (typeof raw.name !== 'string') continue
+    const name = raw.name.trim()
+    if (!name || name.length > GROUP_NAME_MAX) continue
+    if (/[\u0000-\u001f\u007f]/.test(name) || FORMAT_CHARS_RE.test(name)) continue
+    const nameKey = name.toLowerCase()
+    if (ids.has(raw.id) || names.has(nameKey)) continue
+    ids.add(raw.id)
+    names.add(nameKey)
+    out.push({ id: raw.id, name, icon: sanitizeGroupIcon(raw.icon) })
+    if (out.length >= MAX_GROUPS) break
+  }
+  return out
+}
+
+/* 没有分组配置（首次部署 / 旧版本数据）时回落到内置四组，
+   保证升级后订阅输出与升级前逐字一致。 */
+function resolveGroups(config) {
+  const clean = sanitizeGroups(config && config.groups)
+  return clean.length ? clean : defaultGroups()
+}
+
+/* 写路径严格：名称必填、不重名、不与策略组 / 应用组 / 内置策略冲突，
+   id 不合法或重复时重新生成（前端新建分组不必自己造 id）。 */
+function validateGroups(input) {
+  if (!Array.isArray(input)) throw new HttpError(400, '分组数据格式不正确', 'groups')
+  // 空分组表会被读路径回落到内置四组，等于「删了又回来」：直接拒绝，避免这种半生效状态
+  if (!input.length) throw new HttpError(400, '至少需要保留一个分组', 'groups')
+  if (input.length > MAX_GROUPS) throw new HttpError(400, `分组数量不能超过 ${MAX_GROUPS} 个`, 'groups')
+  const out = []
+  const ids = new Set()
+  const names = new Set()
+  input.forEach((raw, index) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      throw new HttpError(400, `第 ${index + 1} 个分组数据无效`, 'groups')
+    }
+    const name = requireString(raw.name, 'groupName', '分组名称', GROUP_NAME_MAX)
+    if (FORMAT_CHARS_RE.test(name)) throw new HttpError(400, '分组名称不能包含不可见控制字符', 'groupName')
+    if (RESERVED_GROUP_NAMES.has(name)) {
+      throw new HttpError(400, `分组名称「${name}」与内置策略或应用策略组冲突`, 'groupName')
+    }
+    const nameKey = name.toLowerCase()
+    if (names.has(nameKey)) throw new HttpError(400, `分组名称「${name}」重复`, 'groupName')
+    names.add(nameKey)
+    let id = typeof raw.id === 'string' && GROUP_ID_RE.test(raw.id) ? raw.id : ''
+    if (!id || ids.has(id)) {
+      do { id = 'g_' + crypto.randomUUID() } while (ids.has(id))
+    }
+    ids.add(id)
+    out.push({ id, name, icon: validateGroupIcon(raw.icon) })
+  })
+  return out
+}
+
+/* 节点所属分组：只认分组表里存在的 id，其余（含已删除的分组）归入「未分组」。
+   groupId 缺失时回落到旧版的 region 字段，历史节点因此无需迁移。 */
+function nodeGroupId(raw, groups) {
+  if (!raw || typeof raw !== 'object') return ''
+  const candidate = typeof raw.groupId === 'string'
+    ? raw.groupId.trim()
+    : (typeof raw.region === 'string' ? raw.region.trim() : '')
+  if (!candidate || !GROUP_ID_RE.test(candidate)) return ''
+  if (Array.isArray(groups) && !groups.some(group => group.id === candidate)) return ''
+  return candidate
+}
+
+/* Clash 要求 proxy 名与 proxy-group 名不能相同：同名节点会被客户端判为配置错误。
+   写入路径两侧都校验，渲染路径再兜一层（成员的个人节点可能绕过分组校验）。 */
+function policyGroupNames(config) {
+  const names = new Set([MAIN_GROUP])
+  APP_GROUPS.forEach(app => names.add(app.name))
+  resolveGroups(config).forEach(group => names.add(group.name))
+  return names
 }
 
 const MAX_TOTAL_GB = 1048576
@@ -964,15 +1109,23 @@ async function readConfig(env, options = {}) {
     /* 元素级兜底：旧版本写入、手工编辑或并发写入都可能留下 null / 非对象元素，
        只判断「是不是数组」不够——buildYaml 里一句 node.enabled 就会让整条订阅 500。
        坏元素直接丢弃，渲染层（isRenderableNode）再兜一层字段级校验。 */
-    const nodes = parsed.nodes.filter(node => node && typeof node === 'object' && !Array.isArray(node))
+    const groups = resolveGroups(parsed)
+    const nodes = parsed.nodes
+      .filter(node => node && typeof node === 'object' && !Array.isArray(node))
+      /* 旧数据只有 region：读出来就折成 groupId，写路径与渲染路径因此只需要认一个字段 */
+      .map(node => {
+        const { region, ...rest } = node
+        return { ...rest, groupId: nodeGroupId(node, groups) }
+      })
     return {
       config: {
         v: 1,
         rev: Number.isFinite(parsed.rev) ? parsed.rev : 1,
         updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : null,
+        groups,
         nodes,
         defaults: sanitizeDefaults(parsed.defaults),
-        regionOrder: reconcileRegionOrder(parsed.regionOrder, nodes),
+        regionOrder: reconcileRegionOrder(parsed.regionOrder, nodes, groups),
         subscription: sanitizeSubscription(parsed.subscription),
         authToken: storedAuthToken(parsed),
         providerBase: sanitizeProviderBase(parsed.providerBase),
@@ -1174,52 +1327,57 @@ function bandwidthValue(value, field, label) {
   return `${match[1]} ${match[2].toLowerCase()}`
 }
 
-const GROUP_REGIONS = ['us', 'jp', 'hk', 'relay']
-
+/* 每个分组一条独立的节点顺序表，键就是分组 id（内置组沿用 us / jp / hk / relay）。
+   键形态不合法的直接丢弃：它不可能匹配到任何分组，只会白占 KV 体积。 */
 function sanitizeRegionOrder(input) {
   const out = {}
   if (!input || typeof input !== 'object') return out
-  GROUP_REGIONS.forEach(region => {
-    const arr = input[region]
+  Object.keys(input).slice(0, MAX_GROUPS * 2).forEach(id => {
+    if (!GROUP_ID_RE.test(id)) return
+    const arr = input[id]
     if (!Array.isArray(arr)) return
     const seen = new Set()
     const clean = []
-    arr.forEach(id => {
-      if (typeof id === 'string' && id && !seen.has(id)) {
-        seen.add(id)
-        clean.push(id)
+    arr.forEach(nodeId => {
+      if (typeof nodeId === 'string' && nodeId && !seen.has(nodeId)) {
+        seen.add(nodeId)
+        clean.push(nodeId)
       }
     })
-    if (clean.length) out[region] = clean
+    if (clean.length) out[id] = clean
   })
   return out
 }
 
-// 按当前节点名单整理分组顺序：剔除已删除/已换组 id，未收录的本组节点按全局顺序追加到末尾
-function reconcileRegionOrder(stored, nodes) {
+// 按当前分组与节点名单整理顺序：剔除已删除分组 / 已删除节点 / 已换组的 id，
+// 未收录的本组节点按全局顺序追加到末尾
+function reconcileRegionOrder(stored, nodes, groups) {
+  const list = Array.isArray(groups) && groups.length ? groups : defaultGroups()
   const clean = sanitizeRegionOrder(stored)
-  const byRegion = { us: [], jp: [], hk: [], relay: [] }
+  const byGroup = {}
+  list.forEach(group => { byGroup[group.id] = [] })
   nodes.forEach(node => {
-    if (node && byRegion[node.region]) byRegion[node.region].push(node.id)
+    const id = nodeGroupId(node, list)
+    if (id && byGroup[id]) byGroup[id].push(node.id)
   })
   const out = {}
-  GROUP_REGIONS.forEach(region => {
-    const members = new Set(byRegion[region])
+  list.forEach(group => {
+    const members = new Set(byGroup[group.id])
     const seen = new Set()
     const arr = []
-    ;(clean[region] || []).forEach(id => {
+    ;(clean[group.id] || []).forEach(id => {
       if (members.has(id) && !seen.has(id)) {
         seen.add(id)
         arr.push(id)
       }
     })
-    byRegion[region].forEach(id => {
+    byGroup[group.id].forEach(id => {
       if (!seen.has(id)) {
         seen.add(id)
         arr.push(id)
       }
     })
-    if (arr.length) out[region] = arr
+    if (arr.length) out[group.id] = arr
   })
   return out
 }
@@ -1246,13 +1404,18 @@ function validateDefaults(input) {
   return cleaned
 }
 
-function validateNodes(input) {
+/* options.groups：当前分组表。传入时 groupId 只接受表内 id（未知值折成未分组），
+   节点名也不允许与分组同名 —— Clash 里 proxy 与 proxy-group 同名会让整份配置失效。 */
+function validateNodes(input, options = {}) {
   if (!Array.isArray(input)) throw new HttpError(400, '节点数据格式不正确')
   if (input.length > MAX_NODES) throw new HttpError(400, `节点数量不能超过 ${MAX_NODES} 个`)
 
   const allowedFingerprints = FINGERPRINTS
   const allowedNetworks = NETWORKS
   const allowedCiphers = CIPHERS
+  const groups = Array.isArray(options.groups) ? options.groups : null
+  const groupNames = new Set()
+  if (groups) groups.forEach(group => groupNames.add(group.name.toLowerCase()))
   const ids = new Set()
   const names = new Set()
   const nodes = []
@@ -1268,6 +1431,9 @@ function validateNodes(input) {
     if (RESERVED_NAMES.has(name)) {
       throw new HttpError(400, `节点名称「${name}」与策略组或内置策略冲突`, 'name')
     }
+    if (groupNames.has(name.toLowerCase())) {
+      throw new HttpError(400, `节点名称「${name}」与分组同名，客户端会解析失败`, 'name')
+    }
     const nameKey = name.toLowerCase()
     if (names.has(nameKey)) throw new HttpError(400, `节点名称「${name}」重复`, 'name')
     names.add(nameKey)
@@ -1276,7 +1442,7 @@ function validateNodes(input) {
     if (!type) throw new HttpError(400, `节点「${name}」的协议类型不受支持`, 'type')
     const server = hostValue(raw.server, 'server', '服务器地址', { required: true })
     const port = portValue(raw.port)
-    const region = REGIONS.includes(raw.region) ? raw.region : 'other'
+    const groupId = nodeGroupId(raw, groups)
     const tags = Array.isArray(raw.tags)
       ? [...new Set(raw.tags.filter(tag => TAGS.includes(tag)))]
       : []
@@ -1287,7 +1453,7 @@ function validateNodes(input) {
     if (!id || ids.has(id)) id = 'n_' + crypto.randomUUID()
     ids.add(id)
 
-    const node = { id, name, type, server, port, region, enabled, showInMain, tags }
+    const node = { id, name, type, server, port, groupId, enabled, showInMain, tags }
 
     if (type === 'vless') {
       const uuid = requireString(raw.uuid, 'uuid', 'UUID', 64)
@@ -1874,7 +2040,16 @@ async function apiSave(request, url, env, principal) {
     }, 409)
   }
 
-  const nodes = validateNodes(body.nodes)
+  // 分组先校验：节点名要与分组名互斥，节点 groupId 也要按分组表归一
+  const groups = body.groups !== undefined
+    ? validateGroups(body.groups)
+    : resolveGroups(current.config)
+  const nodes = validateNodes(body.nodes, { groups })
+  const groupNames = new Set(groups.map(group => group.name.toLowerCase()))
+  const clash = nodes.find(node => groupNames.has(node.name.toLowerCase()))
+  if (clash) {
+    throw new HttpError(400, `分组名称「${clash.name}」与节点同名，客户端会解析失败`, 'groupName')
+  }
   const defaults = body.defaults !== undefined
     ? validateDefaults(body.defaults)
     : sanitizeDefaults(current.config.defaults)
@@ -1883,7 +2058,8 @@ async function apiSave(request, url, env, principal) {
     : sanitizeProviderBase(current.config.providerBase)
   const regionOrder = reconcileRegionOrder(
     body.regionOrder !== undefined ? body.regionOrder : current.config.regionOrder,
-    nodes
+    nodes,
+    groups
   )
   const subscription = body.subscription !== undefined
     ? sanitizeSubscription(body.subscription)
@@ -1903,6 +2079,7 @@ async function apiSave(request, url, env, principal) {
     v: 1,
     rev: (current.config.rev || 0) + 1,
     updatedAt: new Date().toISOString(),
+    groups,
     nodes,
     defaults,
     regionOrder,
@@ -1938,7 +2115,7 @@ async function apiSavePersonalNodes(request, url, env, principal) {
     return json({ error: '个人节点已在其他窗口更新，请刷新后重试', rev: current.rev }, 409)
   }
 
-  const nodes = validateNodes(body.nodes)
+  const nodes = validateNodes(body.nodes, { groups: resolveGroups(admin.config) })
   const adminIds = new Set(admin.config.nodes.map(node => node.id))
   const usedIds = new Set()
   const prepared = nodes.map(node => {
@@ -2219,7 +2396,10 @@ function subscriptionHeaders(config) {
 
 function buildYaml(config) {
   const enabled = config.nodes.filter(node => node.enabled)
-  const renderable = enabled.filter(isRenderableNode)
+  /* 最后一道防线：节点名与策略组同名时 Clash 会整份配置报错。
+     写路径已经拦过，这里兜住手工编辑 KV、成员个人节点与旧数据。 */
+  const taken = policyGroupNames(config)
+  const renderable = enabled.filter(node => isRenderableNode(node) && !taken.has(node.name))
   if (renderable.length !== enabled.length) {
     console.warn('Skipped invalid nodes while rendering YAML:', enabled.length - renderable.length)
   }
@@ -2410,24 +2590,24 @@ function nodeToYaml(node) {
 
 function buildProxyGroups(config) {
   const enabled = config.nodes.filter(node => node.enabled)
+  const groups = resolveGroups(config)
   const buckets = []
 
-  REGION_ORDER.forEach(key => {
-    const inRegion = enabled.filter(node => node.region === key)
-    if (inRegion.length) {
-      // 各分组按独立的 regionOrder 排序，未收录的节点保持全局相对顺序（sort 稳定）
-      const rank = new Map((((config.regionOrder || {})[key]) || []).map((id, i) => [id, i]))
-      const far = Number.MAX_SAFE_INTEGER
-      const members = inRegion
-        .slice()
-        .sort((a, b) => {
-          const ra = rank.has(a.id) ? rank.get(a.id) : far
-          const rb = rank.has(b.id) ? rank.get(b.id) : far
-          return ra - rb
-        })
-        .map(node => node.name)
-      buckets.push({ key, name: REGION_META[key].group, icon: REGION_META[key].icon, members })
-    }
+  groups.forEach(group => {
+    const inGroup = enabled.filter(node => nodeGroupId(node, groups) === group.id)
+    if (!inGroup.length) return
+    // 各分组按独立的 regionOrder 排序，未收录的节点保持全局相对顺序（sort 稳定）
+    const rank = new Map((((config.regionOrder || {})[group.id]) || []).map((id, i) => [id, i]))
+    const far = Number.MAX_SAFE_INTEGER
+    const members = inGroup
+      .slice()
+      .sort((a, b) => {
+        const ra = rank.has(a.id) ? rank.get(a.id) : far
+        const rb = rank.has(b.id) ? rank.get(b.id) : far
+        return ra - rb
+      })
+      .map(node => node.name)
+    buckets.push({ id: group.id, name: group.name, icon: group.icon, members })
   })
 
   const mainProxies = [
@@ -2435,17 +2615,18 @@ function buildProxyGroups(config) {
     ...buckets.map(bucket => bucket.name),
     ...enabled.filter(node => node.showInMain !== false).map(node => node.name),
   ]
-  const groups = [{
+  const out = [{
     name: MAIN_GROUP,
     icon: 'https://fastly.jsdelivr.net/gh/Koolson/Qure/IconSet/Color/Global.png',
     proxies: mainProxies,
   }]
 
   buckets.forEach(bucket => {
-    groups.push({ name: bucket.name, icon: bucket.icon, proxies: bucket.members })
+    out.push({ name: bucket.name, icon: bucket.icon, proxies: bucket.members })
   })
 
-  const availableBuckets = new Set(buckets.map(bucket => bucket.name))
+  // 分组名是用户可改的：应用策略组按 id 查当前名字，分组被删掉就不再引用它
+  const nameById = new Map(buckets.map(bucket => [bucket.id, bucket.name]))
 
   APP_GROUPS.forEach(app => {
     const proxies = []
@@ -2453,17 +2634,18 @@ function buildProxyGroups(config) {
       if (value && !proxies.includes(value)) proxies.push(value)
     }
     app.bases.forEach(base => {
-      if (base === MAIN_GROUP || availableBuckets.has(base)) push(base)
+      if (base === MAIN_GROUP) push(MAIN_GROUP)
+      else if (nameById.has(base)) push(nameById.get(base))
     })
     enabled.forEach(node => {
       // tags 可能来自旧数据 / 手工编辑的 KV，缺字段不能让整份订阅 500
       if (Array.isArray(node.tags) && node.tags.includes(app.key)) push(node.name)
     })
     if (!proxies.length) push(MAIN_GROUP)
-    groups.push({ name: app.name, icon: app.icon, proxies })
+    out.push({ name: app.name, icon: app.icon, proxies })
   })
 
-  return groups
+  return out
 }
 
 function groupToYaml(group) {

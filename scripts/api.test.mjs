@@ -276,6 +276,100 @@ group('保存与读取配置')
   eq('409 带回最新 rev', (await putConfig(env, token, { rev: 0, nodes: [] })).body.rev, 1)
 }
 
+group('分组管理')
+{
+  const env = makeEnv()
+  const token = await initConsole(env)
+
+  // 空配置也要有内置四组：升级后控制台与订阅输出与旧版一致
+  const empty = await getConfig(env, token)
+  eq('默认返回内置四组', empty.body.config.groups.length, 4)
+  eq('内置组 id 沿用 region 键', empty.body.config.groups.map(g => g.id).join(','), 'us,jp,hk,relay')
+
+  // 旧数据只有 region：读出来要折成 groupId，且分组不变
+  const legacy = await putConfig(env, token, { rev: 0, nodes: fullNodes() })
+  eq('旧 region 数据保存成功', legacy.status, 200)
+  const legacyNode = legacy.body.config.nodes.find(n => n.id === 'n_hk1')
+  eq('region 折算为 groupId', legacyNode.groupId, 'hk')
+  eq('不再写回 region 字段', Object.prototype.hasOwnProperty.call(legacyNode, 'region'), false)
+
+  // 自定义分组 + 节点归属
+  const custom = await putConfig(env, token, {
+    rev: 1,
+    authToken: SUB_TOKEN,
+    groups: [
+      { id: 'hk', name: '🇭🇰港台节点' },
+      { id: 'g_game', name: '🎮 游戏节点', icon: 'https://cdn.example.com/game.png' },
+    ],
+    nodes: [
+      { id: 'n_hk1', name: 'HK-01', type: 'ss', server: 'hk.example.com', port: 8388, groupId: 'hk', enabled: true, cipher: 'aes-256-gcm', password: 'p1' },
+      { id: 'n_g1', name: 'GAME-01', type: 'ss', server: 'g.example.com', port: 8388, groupId: 'g_game', enabled: true, cipher: 'aes-256-gcm', password: 'p2' },
+      { id: 'n_free', name: 'FREE-01', type: 'ss', server: 'f.example.com', port: 8388, groupId: 'g_missing', enabled: true, cipher: 'aes-256-gcm', password: 'p3' },
+    ],
+  })
+  eq('自定义分组保存成功', custom.status, 200)
+  eq('未知分组 id 折成未分组', custom.body.config.nodes.find(n => n.id === 'n_free').groupId, '')
+
+  const sub = await call(env, '/?token=' + SUB_TOKEN)
+  const groupSection = sub.body.split('proxy-groups:')[1].split('rule-providers:')[0]
+  check('自定义分组写入策略组', groupSection.includes('- name: "🎮 游戏节点"'), '未找到自定义分组')
+  check('自定义分组带自定义图标', groupSection.includes('icon: "https://cdn.example.com/game.png"'))
+  check('自定义分组包含其节点', groupSection.split('🎮 游戏节点')[1].split('- name:')[0].includes('"GAME-01"'))
+  check('已删除的内置分组不再输出', !groupSection.includes('🇯🇵日韩节点'))
+  check('未分组节点只出现在主组', groupSection.split('- name: "🇭🇰港台节点"')[0].includes('"FREE-01"'))
+
+  // 改名不改归属
+  const renamed = await putConfig(env, token, {
+    rev: 2,
+    groups: [
+      { id: 'hk', name: '🇭🇰 香港专线' },
+      { id: 'g_game', name: '🎮 游戏加速' },
+    ],
+    nodes: custom.body.config.nodes,
+  })
+  eq('分组改名成功', renamed.status, 200)
+  const renamedSub = await call(env, '/?token=' + SUB_TOKEN)
+  check('改名后策略组用新名字', renamedSub.body.includes('- name: "🎮 游戏加速"'))
+  check('改名后节点仍在原分组', renamedSub.body.split('🎮 游戏加速')[1].split('- name:')[0].includes('"GAME-01"'))
+
+  // 写入校验
+  const badName = await putConfig(env, token, { rev: 3, groups: [{ id: 'a', name: 'X' }, { id: 'b', name: 'X' }], nodes: [] })
+  eq('分组名重复 400', badName.status, 400)
+  const reserved = await putConfig(env, token, { rev: 3, groups: [{ id: 'a', name: 'DIRECT' }], nodes: [] })
+  eq('分组名占用内置策略 400', reserved.status, 400)
+  const clashNode = await putConfig(env, token, {
+    rev: 3,
+    groups: [{ id: 'a', name: '🎮 游戏加速' }],
+    nodes: [{ id: 'n_x', name: '🎮 游戏加速', type: 'ss', server: 'x.example.com', port: 8388, enabled: true, cipher: 'aes-256-gcm', password: 'p' }],
+  })
+  eq('节点与分组同名 400', clashNode.status, 400)
+  const badIcon = await putConfig(env, token, { rev: 3, groups: [{ id: 'a', name: 'A', icon: 'javascript:alert(1)' }], nodes: [] })
+  eq('非 https 图标 400', badIcon.status, 400)
+  const tooMany = await putConfig(env, token, {
+    rev: 3,
+    groups: Array.from({ length: 25 }, (_, i) => ({ id: 'g' + i, name: 'G' + i })),
+    nodes: [],
+  })
+  eq('分组数量超限 400', tooMany.status, 400)
+  const noName = await putConfig(env, token, { rev: 3, groups: [{ id: 'a' }], nodes: [] })
+  eq('分组名缺失 400', noName.status, 400)
+  const noGroups = await putConfig(env, token, { rev: 3, groups: [], nodes: [] })
+  eq('空分组表 400', noGroups.status, 400)
+
+  // 删除分组：节点保留、regionOrder 里的旧键被清掉
+  const dropped = await putConfig(env, token, {
+    rev: 3,
+    groups: [{ id: 'g_game', name: '🎮 游戏加速' }],
+    nodes: renamed.body.config.nodes,
+    regionOrder: { hk: ['n_hk1'], g_game: ['n_g1'] },
+  })
+  eq('删除分组成功', dropped.status, 200)
+  check('regionOrder 只保留现存分组', !Object.prototype.hasOwnProperty.call(dropped.body.config.regionOrder, 'hk'),
+    JSON.stringify(dropped.body.config.regionOrder))
+  eq('被删分组的节点仍保留', dropped.body.config.nodes.some(n => n.id === 'n_hk1'), true)
+  eq('被删分组的节点归入未分组', dropped.body.config.nodes.find(n => n.id === 'n_hk1').groupId, '')
+}
+
 group('订阅输出')
 {
   const env = makeEnv()
