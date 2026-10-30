@@ -196,7 +196,6 @@ scripts/api.test.mjs   零依赖接口回归测试
 wrangler.toml          Worker 配置 + KV / 限流绑定声明
 ```
 
-`dist/1.js` 是唯一被部署的文件，由构建现场生成，不进仓库。
 
 </details>
 
