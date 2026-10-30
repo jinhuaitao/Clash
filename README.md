@@ -62,7 +62,8 @@ Workers & Pages → **Create** → **Workers** → **Import a repository**，选
 
 | 名称 | 作用 | 必填 |
 | --- | --- | --- |
-| `ADMIN_TOKEN` | 初始化校验（`/api/setup` 需带 `Authorization: Bearer <ADMIN_TOKEN>`）+ 忘记密码时的恢复通道，不参与日常登录。**少于 16 位、含空白或控制字符的值会被直接忽略**（恢复通道随之不可用），并在日志里提示一次 | 否（公开部署建议配） |
+| `ADMIN_TOKEN` | 初始化校验（`/api/setup` 需带 `Authorization: Bearer <ADMIN_TOKEN>`）+ 忘记密码时的恢复通道，不参与日常登录。**少于 16 位、含空白或控制字符的值会被直接忽略**（恢复通道随之不可用），并在日志里提示一次。**未配置时实例默认拒绝初始化**，见下方 `ALLOW_OPEN_SETUP` | 是（首次初始化前必须配） |
+| `ALLOW_OPEN_SETUP` | 设为 `1` 时允许「没有 `ADMIN_TOKEN` 也能初始化」，即旧的零配置行为。仅在本地开发或一次性实例上使用：公开域名下等于把所有者账号开放给第一个访问者 | 否 |
 | `AUTH_TOKEN` | 订阅令牌；也可以只在设置页生成，无需环境变量。少于 16 位或含空白 / 控制字符的值会被忽略 | 否 |
 | `SESSION_SECRET` | 会话签名密钥，32–256 位随机字符串。配置后会话签名不再依赖 KV 里的 secret，**KV 被读走也无法伪造会话**；改动它会立刻让所有已登录会话失效（等价于「强制全员重新登录」） | 否 |
 | `SESSION_TTL_HOURS` | 会话有效期，默认 `168`（7 天），可调范围 1–168。缩短只影响之后签发的令牌，已签发的仍在各自 `exp` 到期后失效 | 否 |
@@ -92,7 +93,9 @@ Worker 内的内存限流按 isolate 计数，换个 isolate 就重置；这两�
 
 ### 5. 开始使用
 
-打开 `https://<worker>.<子域>.workers.dev/admin` → 按提示创建所有者账号 → 「设置 → 访问令牌」生成并保存 `AUTH_TOKEN` → 添加节点。需要共享给他人时，在左侧「用户管理」新建成员并勾选共享节点，成员登录后即可看到自己的订阅链接，也可以添加只对自己生效的个人节点。保存即写入 KV，客户端下次刷新订阅就拿到新配置。
+打开 `https://<worker>.<子域>.workers.dev/admin`，在初始化表单里填上刚才配置的 `ADMIN_TOKEN` → 创建所有者账号 → 「设置 → 访问令牌」生成并保存 `AUTH_TOKEN` → 添加节点。需要共享给他人时，在左侧「用户管理」新建成员并勾选共享节点，成员登录后即可看到自己的订阅链接，也可以添加只对自己生效的个人节点。保存即写入 KV，客户端下次刷新订阅就拿到新配置。
+
+> **必须先配 `ADMIN_TOKEN`**：未配置时 `/api/setup` 一律返回 `503`，避免未初始化的实例被扫描器抢注所有者。只有显式设置 `ALLOW_OPEN_SETUP=1` 才会回到「谁先打开 `/admin` 谁就是所有者」的旧行为。
 
 ---
 
@@ -110,7 +113,7 @@ Worker 内的内存限流按 isolate 计数，换个 isolate 就重置；这两�
 <summary><b>忘记密码 / 用户数据损坏怎么办</b></summary>
 
 - 配了 `ADMIN_TOKEN`：在登录页点「使用部署恢复令牌」进入控制台，到设置页重置密码。
-- 没配过 `ADMIN_TOKEN`：在 Cloudflare 控制台的 KV 里删除 `users` 记录，重新打开 `/admin` 创建账号，再用「导入备份」恢复节点。
+- 没配过 `ADMIN_TOKEN`：先补一个 16 位以上的随机 Secret，再在 Cloudflare 控制台的 KV 里删除 `users` 记录，重新打开 `/admin` 用该令牌创建账号，最后用「导入备份」恢复节点。临时打开 `ALLOW_OPEN_SETUP=1` 也可以，但务必在初始化完成后立刻关掉。
 - 控制台提示「用户数据已损坏」时 `/api/setup` 会拒绝自动初始化，这是防止任意访问者抢占管理员，需由持有 KV 写权限的人手动处理。
 </details>
 
@@ -161,8 +164,8 @@ LICENSE / CHANGELOG.md 许可与变更记录
 | GET | `/?token=<AUTH_TOKEN>` | 查询令牌或 `Authorization: Bearer` | 订阅 YAML，带 `subscription-userinfo`；也接受成员的专属订阅令牌（只含其可用节点）；令牌错误或缺失返回伪装页 |
 | HEAD | `/?token=<AUTH_TOKEN>` | 查询令牌或 `Authorization: Bearer` | 只返回头部（含 `subscription-userinfo`），不生成 YAML 正文，适合客户端探活 |
 | GET | `/admin`、`/console` | 页面内登录 | 控制台 |
-| GET | `/api/auth` | 公开 | `needsSetup` / `setupLocked` / `recovery` / `maxUsers` / `corrupted` |
-| POST | `/api/setup` | 公开（配了 `ADMIN_TOKEN` 时 `Bearer` 需带令牌） | 创建第一个管理员，已初始化或用户库损坏返回 `409` |
+| GET | `/api/auth` | 公开 | `needsSetup` / `setupLocked`（需令牌才能初始化）/ `setupDisabled`（完全禁止初始化）/ `recovery` / `allowOpenSetup` / `maxUsers` / `corrupted` |
+| POST | `/api/setup` | 公开；**未配 `ADMIN_TOKEN` 时默认 `503`**，配了则 `Bearer` 必须带令牌 | 创建第一个管理员，已初始化或用户库损坏返回 `409` |
 | POST | `/api/login` | 公开 | 用户名或邮箱 + 密码，返回会话令牌 |
 | GET | `/api/config` | `Bearer <会话>` | 读取配置与运行状态；成员的响应为 `scope` 内的共享节点 + 个人节点，`meta` 带 `role` / `canWrite` / `canManageUsers` / `scope` / `personalNodeIds` / `personalRev`；`config.authToken` 不回显，订阅链接在 `meta.subUrl` |
 | PUT | `/api/config` | `Bearer <会话>`（仅所有者） | 整体保存，带 `rev` 乐观锁；可同时更新订阅令牌与规则镜像源 |
@@ -217,7 +220,7 @@ LICENSE / CHANGELOG.md 许可与变更记录
 
 - 不要把 `dist/`、`.dev.vars`、导出的订阅 YAML 或备份 JSON 提交进仓库（`.gitignore` 已默认忽略，别用 `git add -f` 绕过）。
 - 如果曾公开过含节点的旧版本（例如单文件 `1.js`），**立即作废并更换**其中出现过的 UUID、Reality 公私钥与各协议密码。
-- 免费版 Worker CPU 受限，PBKDF2 默认 1 万次迭代：请用 12 位以上的长密码，不要复用其他站点的密码；付费计划可把 `PASSWORD_ITERATIONS` 提到 `200000`，显著提高 KV 泄漏后的离线破解成本。
+- 免费版 Worker CPU 受限，PBKDF2 默认 1 万次迭代（约为 OWASP 建议值的 1/60，未配置 `PASSWORD_ITERATIONS` 时日志会提示一次）：请用 12 位以上的长密码，不要复用其他站点的密码；付费计划请把 `PASSWORD_ITERATIONS` 提到 `200000`，显著提高 KV 泄漏后的离线破解成本。迭代次数按账号存储，调高不会让旧口令失效。
 - 订阅令牌支持 `Authorization: Bearer` 头（客户端若支持请优先使用），这样令牌不会出现在 URL、CDN / Worker 日志与浏览器历史里；查询参数 `?token=` 只为兼容保留。
 - 订阅接口返回 `access-control-allow-origin: *` 以便各类客户端拉取，令牌即凭据，泄露后立刻更换。
 - 成员的专属订阅令牌只能取到 `scope` 内的共享节点与自己的个人节点，且不能登录控制台；如链接外泄，让成员在设置页改密（或所有者重置密码）即可让旧链接立即失效，代价只是重新分发一次新链接。
@@ -226,7 +229,9 @@ LICENSE / CHANGELOG.md 许可与变更记录
 - 控制台与伪装页都带 CSP（`script-src 'nonce-…'`、`style-src 'nonce-…'`、`object-src 'none'`、`worker-src 'none'`、`frame-ancestors 'none'`）、`X-Frame-Options: DENY`、`cross-origin-resource-policy: same-origin`、`cross-origin-opener-policy: same-origin`、`strict-transport-security`、最小化的 `permissions-policy` 和 `noindex`，不进搜索引擎、不能被嵌套、也不给第三方页借用资源。样式同样走 nonce 而不是 `'unsafe-inline'`：样式一旦可内联，CSS 选择器配外部 `url()` 就能在不执行脚本的前提下把页面里的属性值逐位漏出去。
 - KV 绑定异常或读写失败时接口返回 `502` 并带可读说明，订阅降级为空配置而不是让请求裸 500 掉进 Worker 错误页；`/api/auth` 的 `corrupted` 字段用来区分「没绑 KV」「未初始化」「数据损坏」三种状态。
 - **凭据类环境变量的形态是硬门槛**：`AUTH_TOKEN`、`ADMIN_TOKEN` 少于 16 位、含空白或控制字符时会被直接忽略（日志提示一次），不会「将就着用」。`ADMIN_TOKEN` 被忽略意味着恢复通道不可用，请配 16 位以上的随机值并写进 Secret。
-- **未配置 `ADMIN_TOKEN` 的公开实例，第一个打开 `/admin` 的人就是所有者**。部署后请立刻完成初始化，或先配好 `ADMIN_TOKEN` 再公开域名；初始化成功时若未配置该变量，日志会明确提示。
+- **初始化默认 fail-closed**：未配置 `ADMIN_TOKEN` 时 `/api/setup` 返回 `503`，任何人都无法抢注所有者。部署顺序应是「先配 `ADMIN_TOKEN` → 再打开 `/admin` → 创建所有者」。只有显式设置 `ALLOW_OPEN_SETUP=1` 才会恢复「第一个打开 `/admin` 的人就是所有者」的旧行为，公开域名下不要这么做。
+- **成员拿不到所有者的预设凭据**：`/api/config` 对成员返回的 `defaults` 恒为空对象，`regionOrder` 只包含其 `scope` 内的节点 id；所有者的 `vlessUuid` / Reality 公钥 / 回落域名不会下发给任何成员。
+- **恢复令牌不落盘**：用 `ADMIN_TOKEN` 进入恢复会话后不会写入 `sessionStorage`，刷新页面即退出，避免长期凭据留在浏览器里。
 - **边缘限流**：`wrangler.toml` 里的 `[[ratelimits]]` 把 `/api/*`（120 次/分钟）与订阅 / 伪装页（240 次/分钟）的计数放到 Cloudflare 边缘，跨 isolate 生效。内存桶只是兜底，删掉绑定后攻击者换个 isolate 就能重置计数。
 - **请求体边读边限长**：`content-length` 可以缺失或撒谎，服务端在读的过程中累计字节数，超过 256 KB 立即取消读取并返回 `413`，不会先把整个请求体读进内存。
 - **不可见字符会被拒**：节点名、用户名、服务器地址里的零宽 / 双向控制符（如 U+200B、U+202E）会让界面显示成另一串字符（把 `evil.com` 伪装成 `moc.live`），写入与渲染两处都会拦掉。

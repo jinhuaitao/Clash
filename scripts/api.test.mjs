@@ -87,6 +87,10 @@ function makeEnv(options = {}) {
   }
   if (options.AUTH_TOKEN) env.AUTH_TOKEN = options.AUTH_TOKEN
   if (options.ADMIN_TOKEN) env.ADMIN_TOKEN = options.ADMIN_TOKEN
+  /* 生产默认是 fail-closed（没有 ADMIN_TOKEN 就不允许初始化），
+     但绝大多数用例只关心初始化之后的行为，所以测试环境默认打开开放初始化；
+     专门验证「闸门」的用例会显式关掉它。 */
+  env.ALLOW_OPEN_SETUP = options.ALLOW_OPEN_SETUP === undefined ? '1' : options.ALLOW_OPEN_SETUP
   return env
 }
 
@@ -881,7 +885,9 @@ group('令牌与会话加固')
       controller.close()
     },
   })
-  const huge = await call(env, '/api/setup', { method: 'POST', body: hugeStream, duplex: 'half' })
+  // 未初始化的实例才会走到读请求体那一步（初始化闸门在解析之前就拦住了）
+  const bodyEnv = makeEnv()
+  const huge = await call(bodyEnv, '/api/setup', { method: 'POST', body: hugeStream, duplex: 'half' })
   eq('无 content-length 的超大请求体被 413', huge.status, 413)
 
   const shortAdmin = makeEnv({ ADMIN_TOKEN: 'short' })
@@ -904,8 +910,121 @@ group('令牌与会话加固')
   eq('配置 SESSION_SECRET 后可正常登录', (await getConfig(secEnv, afterSecret)).status, 200)
 }
 
-/* ================= 收尾 ================= */
+group('初始化闸门')
+{
+  /* 生产默认 fail-closed：没有 ADMIN_TOKEN 时，未初始化的实例不允许任何人初始化，
+     否则扫描器可以直接抢注所有者。 */
+  const locked = makeEnv({ ALLOW_OPEN_SETUP: '' })
+  const info = (await call(locked, '/api/auth')).body
+  eq('未配置 ADMIN_TOKEN 时 setupDisabled', info.setupDisabled, true)
+  eq('未配置 ADMIN_TOKEN 时不需要令牌（因为根本不允许初始化）', info.setupLocked, false)
+  eq('未配置 ADMIN_TOKEN 时 allowOpenSetup', info.allowOpenSetup, false)
+  const denied = await call(locked, '/api/setup', {
+    method: 'POST',
+    body: JSON.stringify({ username: 'intruder@example.com', password: 'Intruder-Pass-99' }),
+  })
+  eq('默认拒绝开放初始化', denied.status, 503)
+  eq('被拒后没有写入任何账号', locked.data.has('users'), false)
+  check('拒绝信息指明要配 ADMIN_TOKEN', String(denied.body.error).includes('ADMIN_TOKEN'), denied.body.error)
 
+  // 显式打开 ALLOW_OPEN_SETUP 才回到旧的零配置行为
+  const open = makeEnv()
+  eq('ALLOW_OPEN_SETUP=1 时可初始化', (await asAdmin(open)).status, 200)
+  const openInfo = (await call(open, '/api/auth')).body
+  eq('开放初始化时 setupDisabled 为 false', openInfo.setupDisabled, false)
+
+  // 配了 ADMIN_TOKEN：不带令牌一律 403，带了才放行
+  const gated = makeEnv({ ADMIN_TOKEN: 'admin-token-0123456789abcdef', ALLOW_OPEN_SETUP: '' })
+  const gatedInfo = (await call(gated, '/api/auth')).body
+  eq('配了 ADMIN_TOKEN 时 setupLocked', gatedInfo.setupLocked, true)
+  eq('配了 ADMIN_TOKEN 时 setupDisabled', gatedInfo.setupDisabled, false)
+  const noToken = await call(gated, '/api/setup', {
+    method: 'POST',
+    body: JSON.stringify({ username: 'x@example.com', password: 'X-Pass-1234567' }),
+  })
+  eq('不带令牌初始化被 403', noToken.status, 403)
+  eq('带令牌可以初始化', (await asAdmin(gated)).status, 200)
+  eq('初始化后不再需要令牌', (await call(gated, '/api/setup', {
+    method: 'POST',
+    headers: bearer('admin-token-0123456789abcdef'),
+    body: JSON.stringify({ username: 'y@example.com', password: 'Y-Pass-1234567' }),
+  })).status, 409)
+}
+
+group('成员可见面收敛')
+{
+  const env = makeEnv()
+  const ownerToken = await initConsole(env)
+  await putConfig(env, ownerToken, {
+    rev: 0,
+    nodes: fullNodes(),
+    authToken: SUB_TOKEN,
+    defaults: { vlessUuid: UUID_B, vlessPublicKey: 'OWNER-PRESET-PBK', vlessServername: 'preset.example.com', vlessPort: 443 },
+  })
+
+  const users = (await call(env, '/api/users', { headers: bearer(ownerToken) })).body
+  await call(env, '/api/users', {
+    method: 'POST',
+    headers: { ...bearer(ownerToken), 'content-type': 'application/json' },
+    body: JSON.stringify({
+      rev: users.rev, username: 'scoped', password: 'Scoped-Pass-123',
+      role: 'member', scope: { allNodes: false, nodeIds: ['n_hk1'] },
+    }),
+  })
+
+  const scopedToken = (await login(env, 'scoped', 'Scoped-Pass-123')).body.token
+  const cfg = (await getConfig(env, scopedToken)).body
+  eq('成员拿不到所有者的预设 UUID', cfg.config.defaults.vlessUuid, undefined)
+  eq('成员预设整体为空', Object.keys(cfg.config.defaults).length, 0)
+  check('regionOrder 只含授权节点', JSON.stringify(cfg.config.regionOrder) === JSON.stringify({ hk: ['n_hk1'] }), JSON.stringify(cfg.config.regionOrder))
+  check('成员响应里不出现所有者凭据', !JSON.stringify(cfg).includes('OWNER-PRESET-PBK'))
+
+  const ownerCfg = (await getConfig(env, ownerToken)).body
+  eq('所有者仍能读回预设 UUID', ownerCfg.config.defaults.vlessUuid, UUID_B)
+  eq('所有者 regionOrder 完整', Object.keys(ownerCfg.config.regionOrder).length, 3)
+
+  const sub = await call(env, '/?token=' + encodeURIComponent(new URL(cfg.meta.subUrl).searchParams.get('token')))
+  check('成员订阅不含未授权节点', sub.body.includes('HK-01') && !sub.body.includes('US-01'))
+}
+
+group('脏数据与令牌形态')
+{
+  // nodes 数组里混入 null / 原始值：旧版本、手工编辑都会留下这种数据，
+  // 不能让一句 node.enabled 把整条订阅打成 500
+  const dirty = makeEnv()
+  const token = await initConsole(dirty)
+  await putConfig(dirty, token, { rev: 0, nodes: [ssNode({ id: 'a', name: 'A-01' })], authToken: SUB_TOKEN })
+  const raw = JSON.parse(dirty.data.get('config'))
+  raw.nodes = [null, 42, 'x', { id: 'n_ok', name: 'OK-01', type: 'ss', server: 'ok.example.com', port: 8388, enabled: true, cipher: 'aes-256-gcm', password: 'p' }]
+  dirty.data.set('config', JSON.stringify(raw))
+
+  const sub = await call(dirty, '/?token=' + SUB_TOKEN)
+  eq('脏元素不拖垮订阅', sub.status, 200)
+  check('订阅跳过脏元素并渲染正常节点', sub.body.includes('OK-01') && !sub.body.includes('null'), sub.body.slice(0, 80))
+  eq('预览同样不 500', (await call(dirty, '/api/preview', { headers: bearer(token) })).status, 200)
+  eq('成员视角读配置也不 500', (await getConfig(dirty, token)).status, 200)
+  flushLogs('dirty-nodes')
+
+  // 读路径必须和写路径一样卡令牌长度，否则 KV 被改坏后几位字符就能拉走订阅
+  const shortTok = makeEnv()
+  const st = await initConsole(shortTok)
+  await putConfig(shortTok, st, { rev: 0, nodes: [], authToken: SUB_TOKEN })
+  const shortRaw = JSON.parse(shortTok.data.get('config'))
+  shortRaw.authToken = 'abc'
+  shortTok.data.set('config', JSON.stringify(shortRaw))
+  check('KV 里的短令牌被忽略', (await call(shortTok, '/?token=abc')).contentType.startsWith('text/html'))
+  check('短令牌被忽略后原令牌也失效（说明读的是 KV 值）', (await call(shortTok, '/?token=' + SUB_TOKEN)).contentType.startsWith('text/html'))
+  flushLogs('short-token')
+
+  // 错误令牌只应扣一次配额：否则爆破预算只剩配置值的一半
+  const rl = makeEnv()
+  const ip = nextIp()
+  const codes = []
+  for (let i = 0; i < 150; i++) codes.push((await call(rl, '/?token=wrong-token-xxxx', { ip })).status)
+  eq('错误令牌每次只扣一次配额', codes.every(code => code === 200), true)
+}
+
+/* ================= 收尾 ================= */
 console.error = realError
 console.warn = realWarn
 

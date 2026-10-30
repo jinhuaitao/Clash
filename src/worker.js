@@ -120,6 +120,9 @@ async function handleRequest(request, env) {
       if (limited) return limited
       const access = await subscriptionAccess(env, token)
       if (access) return await serveSubscription(env, access.config, headOnly)
+      // 令牌无效：本次请求已经在上面计过一次，这里不再重复扣配额，
+      // 否则爆破者实际可用的次数只有配置值的一半
+      return renderDecoy(request, headOnly)
     }
     // 无令牌路径同样限流：伪装页每次都要拼整页 HTML，不能成为免费刷 CPU 的入口
     const decoyLimited = await checkSubRateLimit(request, env)
@@ -180,6 +183,18 @@ function dedicatedAdminToken(env) {
 
 function effectiveAuthToken(config, env) {
   return storedAuthToken(config) || authToken(env)
+}
+
+/* 首次初始化默认要求先配好 ADMIN_TOKEN。
+   未配置的公开实例，第一个打开 /admin 的人就会成为所有者 —— 在扫描器遍地的
+   环境里这不是「便捷」，而是「抢注」。因此默认 fail-closed：
+   没有恢复令牌就拒绝 /api/setup，并明确告诉部署者该配什么。
+   确实需要零配置体验（本地开发、一次性实例）可以显式打开 ALLOW_OPEN_SETUP。 */
+function openSetupAllowed(env) {
+  const raw = env && env.ALLOW_OPEN_SETUP
+  if (typeof raw !== 'string') return false
+  const value = raw.trim().toLowerCase()
+  return value === '1' || value === 'true' || value === 'yes' || value === 'on'
 }
 
 function bearerToken(request) {
@@ -305,9 +320,18 @@ async function derivePasswordHash(password, salt, iterations) {
 
 /* 新建 / 改密时的迭代次数：默认 1 万次以适配免费计划，付费计划可通过环境变量提高。
    已有账号按其存储值校验，改环境变量不会让旧口令失效。 */
+let warnedPasswordIterations = false
 function passwordIterations(env) {
   const raw = Number(env && env.PASSWORD_ITERATIONS)
-  if (!Number.isInteger(raw) || raw < PASSWORD_ITERATIONS) return PASSWORD_ITERATIONS
+  if (!Number.isInteger(raw) || raw < PASSWORD_ITERATIONS) {
+    // 1 万次只有 OWASP 建议值的 1/60：免费计划的 10ms CPU 是硬上限，
+    // 这里不能擅自调高，但必须让部署者知道自己在什么水位上
+    if (!warnedPasswordIterations) {
+      warnedPasswordIterations = true
+      console.warn(`未配置 PASSWORD_ITERATIONS，按 ${PASSWORD_ITERATIONS} 次迭代派生口令（免费计划 CPU 限制）。付费计划请设为 ${PASSWORD_ITERATIONS_MAX}，否则 KV 一旦泄漏，离线爆破成本很低`)
+    }
+    return PASSWORD_ITERATIONS
+  }
   return Math.min(raw, PASSWORD_ITERATIONS_MAX)
 }
 
@@ -655,13 +679,24 @@ function requireOwner(principal, message) {
   if (!isOwner(principal)) throw new HttpError(403, message || '只有所有者可以执行此操作')
 }
 
-/* 成员的控制台与订阅都只包含其可用节点；所有者（及全局订阅令牌）不受限制 */
+/* 成员的控制台与订阅都只包含其可用节点；所有者（及全局订阅令牌）不受限制。
+   defaults 里放的是所有者自己的预设凭据（VLESS UUID / Reality 公钥 / 回落域名），
+   成员拿着没有任何正当用途，却等于白送一份可用凭据，因此对成员一律清空。
+   regionOrder 也按过滤后的节点集重建，避免把 scope 之外节点的 id 一起下发。 */
 function filterConfigForPrincipal(config, principal) {
   if (!principal || isOwner(principal)) return config
   const scope = principal.scope || { allNodes: false, nodeIds: [] }
-  if (scope.allNodes) return config
-  const allowed = new Set(scope.nodeIds)
-  return { ...config, nodes: config.nodes.filter(node => allowed.has(node.id)) }
+  let nodes = config.nodes
+  if (!scope.allNodes) {
+    const allowed = new Set(scope.nodeIds)
+    nodes = config.nodes.filter(node => allowed.has(node.id))
+  }
+  return {
+    ...config,
+    nodes,
+    defaults: {},
+    regionOrder: reconcileRegionOrder(config.regionOrder, nodes),
+  }
 }
 
 async function authenticateRequest(request, env) {
@@ -808,7 +843,12 @@ function sanitizeDefaults(input) {
   if (text(input.vlessUuid)) out.vlessUuid = text(input.vlessUuid)
   if (text(input.vlessPublicKey)) out.vlessPublicKey = text(input.vlessPublicKey)
   if (text(input.vlessShortId)) out.vlessShortId = text(input.vlessShortId)
-  if (text(input.vlessServername)) out.vlessServername = text(input.vlessServername)
+  if (text(input.vlessServername)) {
+    // 读路径也要拦：旧数据 / 手工改过的 KV 不能把含空白、引号或不可见字符的
+    // SNI 原样回填进表单，否则等于绕过写路径的 hostValue 校验
+    const sni = text(input.vlessServername)
+    if (/^[A-Za-z0-9._%:\-\[\]]+$/.test(sni) && !FORMAT_CHARS_RE.test(sni)) out.vlessServername = sni
+  }
   const port = Number(input.vlessPort)
   if (Number.isInteger(port) && port >= 1 && port <= 65535) out.vlessPort = port
   return out
@@ -834,11 +874,23 @@ const SESSION_TOKEN_MAX = 512
    （例如用 RLO 把 evil.com 伪装成 moc.live），除了欺骗审核者没有正当用途 */
 const FORMAT_CHARS_RE = /[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/
 
+let warnedStoredAuthToken = false
+
 function storedAuthToken(config) {
   const value = config && config.authToken
   if (typeof value !== 'string') return ''
   const token = value.trim()
-  return token.length > AUTH_TOKEN_MAX ? '' : token
+  if (!token) return ''
+  // 写路径有 16 位下限，读路径也必须一致：否则 KV 被改坏（或被旧版本写短）
+  // 之后，一个几位的令牌就能拉走整份订阅
+  if (token.length < AUTH_TOKEN_MIN || token.length > AUTH_TOKEN_MAX || /[\s\u0000-\u001f\u007f]/.test(token)) {
+    if (!warnedStoredAuthToken) {
+      warnedStoredAuthToken = true
+      console.warn(`KV 中的订阅令牌不符合 ${AUTH_TOKEN_MIN}-${AUTH_TOKEN_MAX} 位且不含空白的规则，已忽略；请在设置页重新生成`)
+    }
+    return ''
+  }
+  return token
 }
 
 function validateAuthToken(value) {
@@ -909,14 +961,18 @@ async function readConfig(env, options = {}) {
   try {
     const parsed = JSON.parse(raw)
     if (!parsed || !Array.isArray(parsed.nodes)) throw new Error('invalid config shape')
+    /* 元素级兜底：旧版本写入、手工编辑或并发写入都可能留下 null / 非对象元素，
+       只判断「是不是数组」不够——buildYaml 里一句 node.enabled 就会让整条订阅 500。
+       坏元素直接丢弃，渲染层（isRenderableNode）再兜一层字段级校验。 */
+    const nodes = parsed.nodes.filter(node => node && typeof node === 'object' && !Array.isArray(node))
     return {
       config: {
         v: 1,
         rev: Number.isFinite(parsed.rev) ? parsed.rev : 1,
         updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : null,
-        nodes: parsed.nodes,
+        nodes,
         defaults: sanitizeDefaults(parsed.defaults),
-        regionOrder: reconcileRegionOrder(parsed.regionOrder, parsed.nodes),
+        regionOrder: reconcileRegionOrder(parsed.regionOrder, nodes),
         subscription: sanitizeSubscription(parsed.subscription),
         authToken: storedAuthToken(parsed),
         providerBase: sanitizeProviderBase(parsed.providerBase),
@@ -1390,12 +1446,17 @@ async function apiAuthStatus(env) {
     corrupted = !!result.corrupted
   }
   const recovery = !!dedicatedAdminToken(env)
+  const openSetup = openSetupAllowed(env)
   return json({
     version: VERSION,
     kv,
     needsSetup: !store,
+    // 初始化需要恢复令牌（配了 ADMIN_TOKEN 的实例）
     setupLocked: !store && recovery,
+    // 初始化被完全拒绝：既没配 ADMIN_TOKEN，也没显式打开 ALLOW_OPEN_SETUP
+    setupDisabled: !store && !recovery && !openSetup,
     recovery,
+    allowOpenSetup: openSetup,
     corrupted,
     maxUsers: MAX_USERS,
   })
@@ -1405,10 +1466,8 @@ async function apiSetup(request, env) {
   const limited = checkLoginRateLimit(request, '__setup__')
   if (limited) return limited
 
-  const body = await readJsonBody(request)
-  const username = validateUsername(body.username)
-  const password = validatePassword(body.password, username)
-
+  /* 闸门放在读请求体之前：被拒绝的请求不该消耗解析与校验成本，
+     也不该通过错误码差异透露「这台实例到底能不能初始化」以外的东西。 */
   const result = await readUsersStore(env)
   if (result.store) return json({ error: '控制台已完成初始化，请直接登录' }, 409)
   // 用户库存在但解析失败：若放行初始化，任何访问者都能覆盖原数据并抢占管理员。
@@ -1428,7 +1487,17 @@ async function apiSetup(request, env) {
       recordLoginFailure(request, '__setup__')
       return json({ error: '该实例已配置 ADMIN_TOKEN，请填写部署恢复令牌后再初始化', field: 'setupToken' }, 403)
     }
+  } else if (!openSetupAllowed(env)) {
+    // fail-closed：宁可不给部署者方便，也不能让任意访问者抢注所有者
+    return json({
+      error: '为避免实例被任意访问者抢占，初始化前请先在 Worker 的环境变量里配置 ADMIN_TOKEN（16 位以上随机字符串，建议写成 Secret），再打开本页初始化。确实需要开放初始化，可显式设置 ALLOW_OPEN_SETUP=1',
+      setupDisabled: true,
+    }, 503)
   }
+
+  const body = await readJsonBody(request)
+  const username = validateUsername(body.username)
+  const password = validatePassword(body.password, username)
 
   const record = await buildPasswordRecord(password, passwordIterations(env))
   const user = {
@@ -1450,10 +1519,10 @@ async function apiSetup(request, env) {
   }
   await writeUsersStore(env, store)
 
-  /* 未配置 ADMIN_TOKEN 的公开实例，第一个打开 /admin 的人就会成为所有者；
-     初始化成功后提示一次，避免部署者误以为「已经安全」。 */
-  if (!dedicatedAdminToken(env)) {
-    console.warn('控制台已初始化，但未配置 ADMIN_TOKEN：忘记密码时没有恢复通道，建议补一个 16 位以上的随机值')
+  /* 走到这里说明没有 ADMIN_TOKEN（要么开了 ALLOW_OPEN_SETUP，要么从未配置）。
+     提示一次，避免部署者误以为「已经安全」。 */
+  if (!dedicated) {
+    console.warn('控制台已通过开放初始化创建，但未配置 ADMIN_TOKEN：既没有忘记密码的恢复通道，也无法阻止后续的重复初始化尝试，建议立刻补一个 16 位以上的随机 Secret 并关闭 ALLOW_OPEN_SETUP')
   }
 
   // KV 没有条件写（CAS），并发初始化只能事后校验。新键的读是写后一致的，

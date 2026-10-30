@@ -609,7 +609,11 @@
   /* ------------------------------------------------------------------ */
 
   function setLoginBusy(busy) {
-    el.loginBtn.disabled = busy || (state.loginView === 'setup' && state.authInfo && state.authInfo.kv === false);
+    var info = state.authInfo || {};
+    // 两种情况下初始化按钮不可用：没绑 KV；以及实例默认拒绝开放初始化
+    // 又没配 ADMIN_TOKEN（此时填什么都没用，必须先去配环境变量）
+    var blocked = state.loginView === 'setup' && (info.kv === false || info.setupDisabled);
+    el.loginBtn.disabled = busy || blocked;
     el.loginBtn.classList.toggle('is-loading', busy);
     el.loginSpinner.hidden = !busy;
     var labels = { login: '登录', setup: '创建管理员并进入', recovery: '使用恢复令牌' };
@@ -689,12 +693,14 @@
     if (setup) {
       if (!info.kv) {
         el.loginHelp.textContent = '尚未绑定 SUB_KV，无法保存管理员账号，请先完成 KV 绑定。';
+      } else if (info.setupDisabled) {
+        el.loginHelp.textContent = '为防止实例被任意访问者抢占，初始化前需先在 Worker 环境变量里配置 ADMIN_TOKEN（16 位以上随机字符串，建议写成 Secret），保存后刷新本页。确实要开放初始化，可设置 ALLOW_OPEN_SETUP=1。';
       } else if (info.setupLocked) {
         el.loginHelp.textContent = '该实例已配置 ADMIN_TOKEN，需填写恢复令牌才能完成初始化。';
       } else if (info.corrupted) {
         el.loginHelp.textContent = '检测到用户数据损坏，继续初始化会覆盖损坏的账号数据。';
       } else {
-        el.loginHelp.textContent = '初始化完成前，任何访问者都可以创建管理员，请在部署后尽快完成。';
+        el.loginHelp.textContent = '本实例允许开放初始化，任何访问者都能创建管理员，请完成初始化后立刻配置 ADMIN_TOKEN。';
       }
     } else if (recovery) {
       el.loginHelp.textContent = '恢复令牌用于忘记密码或恢复访问，不会取代日常账号登录。';
@@ -783,6 +789,10 @@
         el.loginConfirm.focus();
         return;
       }
+      if (info.setupDisabled) {
+        showLoginError('该实例默认拒绝开放初始化，请先在环境变量中配置 ADMIN_TOKEN 后刷新本页。');
+        return;
+      }
       if (info.setupLocked && !String(el.loginSetupToken.value || '').trim()) {
         showLoginError('该实例已配置 ADMIN_TOKEN，请填写部署恢复令牌。');
         el.loginSetupToken.focus();
@@ -844,7 +854,9 @@
       if (!data || !data.config || !Array.isArray(data.config.nodes)) {
         throw new ApiError('接口返回数据异常，请确认 Worker 版本是否正确', 0);
       }
-      storageSet('session', STORAGE_KEY, token);
+      // 恢复令牌是长期有效、可直接接管全部账号的部署凭据，绝不写进 storage：
+      // 刷新页面即退出恢复会话，避免被浏览器扩展 / 残留脚本长期读取
+      storageRemove('session', STORAGE_KEY);
       applyConfig(data);
       enterApp();
     } catch (err) {
@@ -1076,6 +1088,24 @@
     }
   }
 
+  /* 控制台 CSP 是 style-src 'nonce-…'，内联 style 属性会被浏览器直接丢弃
+     （nonce 只覆盖 <style> 元素，不覆盖 style 属性）。宽度与色块因此改用
+     CSSOM 赋值：element.style 不受 CSP 限制，既保住 nonce-only 策略，
+     又不会让统计条全部渲染成 100%。 */
+  function applyBarStyles(root) {
+    if (!root) return;
+    $$('[data-pct]', root).forEach(function (bar) {
+      var pct = Number(bar.getAttribute('data-pct'));
+      if (!isFinite(pct)) pct = 0;
+      bar.style.width = pct + '%';
+      bar.classList.toggle('is-zero', pct <= 0);
+    });
+    $$('[data-color]', root).forEach(function (dot) {
+      var color = dot.getAttribute('data-color');
+      if (color) dot.style.background = color;
+    });
+  }
+
   function renderOverview() {
     if (!state.config) return;
     var list = nodes();
@@ -1117,11 +1147,12 @@
         var count = typeCounts[type] || 0;
         var percent = Math.round((count / enabled.length) * 100);
         return '<div class="bar-row">' +
-          '<span class="bar-label"><span class="type-dot" style="background:' + TYPE_META[type].color + '"></span><b>' + TYPE_META[type].label + '</b></span>' +
-          '<span class="bar-track"><span class="bar-fill fill-' + type + '" style="width:' + percent + '%"></span></span>' +
+          '<span class="bar-label"><span class="type-dot" data-color="' + esc(TYPE_META[type].color) + '"></span><b>' + TYPE_META[type].label + '</b></span>' +
+          '<span class="bar-track"><span class="bar-fill fill-' + type + '" data-pct="' + percent + '"></span></span>' +
           '<span class="bar-count">' + count + '</span>' +
           '</div>';
       }).join('');
+      applyBarStyles(el.protoBars);
     }
     el.protoTotal.textContent = enabled.length + ' 在线';
 
@@ -1138,11 +1169,12 @@
         var percent = Math.round((count / enabled.length) * 100);
         var region = REGION_META[key];
         return '<div class="bar-row">' +
-          '<span class="bar-label"><span class="type-dot" style="background:' + regionColor(key) + '"></span><b>' + esc(region.group) + '</b></span>' +
-          '<span class="bar-track"><span class="bar-fill fill-' + key + '" style="width:' + percent + '%"></span></span>' +
+          '<span class="bar-label"><span class="type-dot" data-color="' + esc(regionColor(key)) + '"></span><b>' + esc(region.group) + '</b></span>' +
+          '<span class="bar-track"><span class="bar-fill fill-' + key + '" data-pct="' + percent + '"></span></span>' +
           '<span class="bar-count">' + count + '</span>' +
           '</div>';
       }).join('');
+      applyBarStyles(el.regionBars);
     }
 
     var recent = enabled.concat(list.filter(function (node) { return !node.enabled; })).slice(0, 4);
