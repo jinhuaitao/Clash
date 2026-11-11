@@ -136,6 +136,9 @@
     cmdQuery: '',
     cmdIndex: 0,
     cmdItems: [],
+    /* 从配置体检跳转过来时，只显示结论涉及的节点；清空后恢复完整列表 */
+    diagFocus: null,
+    diagIssues: [],
     groupFormId: null,
     groupBusy: false,
     preview: '',
@@ -416,6 +419,9 @@
     el.filterGroup = $('#filter-group');
     el.filterStatus = $('#filter-status');
     el.filterReset = $('#filter-reset');
+    el.focusBanner = $('#focus-banner');
+    el.focusBannerText = $('#focus-banner-text');
+    el.focusBannerClear = $('#focus-banner-clear');
     el.nodeCountLabel = $('#node-count-label');
     el.nodeHead = $('.node-head');
     el.nodeList = $('#node-list');
@@ -1027,6 +1033,8 @@
     state.subRevealed = false;
     state.mutating = false;
     state.subFormat = 'clash';
+    state.diagFocus = null;
+    state.diagIssues = [];
     state.cmdQuery = '';
     state.cmdIndex = 0;
     state.cmdItems = [];
@@ -1487,6 +1495,16 @@
     var add = function (level, title, text, action) {
       issues.push({ level: level, title: title, text: text, action: action || null });
     };
+    /* 结论里带上具体节点 id：点「查看节点」时直接筛出并定位到这些行，
+       而不是把用户丢回一整张列表里自己找。 */
+    var focus = function (items, label) {
+      var ids = items.map(function (node) { return node.id; });
+      return {
+        label: label || (ids.length > 1 ? '查看 ' + ids.length + ' 个节点' : '查看该节点'),
+        target: 'focus',
+        nodeIds: ids
+      };
+    };
 
     if (!meta.hasAuthToken) {
       add('danger', '订阅令牌未配置', '客户端暂时拿不到订阅，请在设置页生成 AUTH_TOKEN。', { label: '去设置', target: 'settings' });
@@ -1498,35 +1516,44 @@
     if (!list.length) {
       add('warn', '还没有节点', '添加第一个节点后，订阅才会包含代理。', { label: '添加节点', target: 'add' });
     } else if (!enabled.length) {
-      add('danger', '所有节点都已停用', '客户端刷新订阅后会拿到一份空配置。', { label: '查看节点', target: 'nodes' });
+      add('danger', '所有节点都已停用', '客户端刷新订阅后会拿到一份空配置。', focus(list, '查看 ' + list.length + ' 个节点'));
     }
 
-    var ungrouped = list.filter(function (node) { return !nodeGroup(node); }).length;
-    if (ungrouped) {
-      add('warn', ungrouped + ' 个节点未分组', '这些节点只出现在全局选择组，不会进入任何地区策略组。', { label: '查看', target: 'ungrouped' });
+    var ungroupedNodes = list.filter(function (node) { return !nodeGroup(node); });
+    if (ungroupedNodes.length) {
+      add('warn', ungroupedNodes.length + ' 个节点未分组', '这些节点只出现在全局选择组，不会进入任何地区策略组。', focus(ungroupedNodes));
     }
 
     var seen = {};
+    var firstByKey = {};
     var dupes = 0;
+    var dupeNodes = [];
     list.forEach(function (node) {
       var key = String(node.server || '').toLowerCase() + ':' + node.port;
-      if (seen[key]) dupes += 1;
-      else seen[key] = true;
+      if (!seen[key]) {
+        seen[key] = true;
+        firstByKey[key] = node;
+        return;
+      }
+      // 冲突双方都要出现：只高亮后来那条，用户没法判断该改哪一个
+      if (firstByKey[key]) { dupeNodes.push(firstByKey[key]); firstByKey[key] = null; }
+      dupeNodes.push(node);
+      dupes += 1;
     });
     if (dupes) {
-      add('warn', dupes + ' 处重复端点', '同一服务器与端口出现多次，客户端里会挤着一批难以区分的线路。', { label: '查看节点', target: 'nodes' });
+      add('warn', dupes + ' 处重复端点', '同一服务器与端口出现多次，客户端里会挤着一批难以区分的线路。', focus(dupeNodes));
     }
 
     var realityBad = enabled.filter(function (node) {
       return node.type === 'vless' && node.reality && (!node.publicKey || !node.servername);
-    }).length;
-    if (realityBad) {
-      add('warn', realityBad + ' 个 Reality 节点信息不完整', '缺少公钥或 SNI 时，客户端通常无法建立连接。', { label: '查看节点', target: 'nodes' });
+    });
+    if (realityBad.length) {
+      add('warn', realityBad.length + ' 个 Reality 节点信息不完整', '缺少公钥或 SNI 时，客户端通常无法建立连接。', focus(realityBad));
     }
 
-    var insecure = enabled.filter(function (node) { return !!node.skipCertVerify; }).length;
-    if (insecure) {
-      add('warn', insecure + ' 个节点跳过了证书校验', '仅应在自签证书且链路可信时开启，公网节点建议保持校验。', { label: '查看节点', target: 'nodes' });
+    var insecure = enabled.filter(function (node) { return !!node.skipCertVerify; });
+    if (insecure.length) {
+      add('warn', insecure.length + ' 个节点跳过了证书校验', '仅应在自签证书且链路可信时开启，公网节点建议保持校验。', focus(insecure));
     }
 
     if (list.length) {
@@ -1546,6 +1573,8 @@
   function renderDiagnostics() {
     if (!el.diagList) return;
     var issues = diagnostics();
+    // 按钮只带序号，节点 id 列表留在内存里，不写进 DOM 属性
+    state.diagIssues = issues;
     var danger = issues.filter(function (item) { return item.level === 'danger'; }).length;
     var warn = issues.filter(function (item) { return item.level === 'warn'; }).length;
     if (el.diagState) {
@@ -1558,9 +1587,9 @@
       el.diagList.innerHTML = '<div class="diag-empty">' + icon('check') + '节点、分组与令牌都已就绪，订阅可以正常下发。</div>';
       return;
     }
-    el.diagList.innerHTML = issues.map(function (item) {
+    el.diagList.innerHTML = issues.map(function (item, index) {
       var action = item.action
-        ? '<button class="diag-action" type="button" data-diag-action="' + esc(item.action.target) + '">' + esc(item.action.label) + '</button>'
+        ? '<button class="diag-action" type="button" data-diag-index="' + index + '">' + esc(item.action.label) + '</button>'
         : '';
       var level = item.level === 'info' ? '' : ' is-' + item.level;
       return '<div class="diag-item' + level + '"><span class="diag-dot"></span>' +
@@ -1568,7 +1597,40 @@
     }).join('');
   }
 
-  function runDiagAction(target) {
+  /* 体检结论 → 节点列表：先清掉会挡住目标行的筛选，只留下相关节点，
+     再滚到第一行并短暂脉冲高亮。用户随时点「显示全部节点」回到完整列表。 */
+  function focusDiagNodes(action) {
+    var ids = (action.nodeIds || []).filter(function (id) { return !!findNode(id); });
+    if (!ids.length) {
+      state.diagFocus = null;
+      switchView('nodes');
+      return;
+    }
+    state.query = '';
+    state.filterType = 'all';
+    state.filterGroup = 'all';
+    state.filterStatus = 'all';
+    if (el.nodeSearch) el.nodeSearch.value = '';
+    if (el.filterType) el.filterType.value = 'all';
+    if (el.filterGroup) el.filterGroup.value = 'all';
+    if (el.filterStatus) el.filterStatus.value = 'all';
+    state.diagFocus = { ids: ids, label: action.label };
+    switchView('nodes');
+    window.setTimeout(function () {
+      var rows = $$('.node-row', el.nodeList);
+      if (!rows.length) return;
+      rows.forEach(function (row) { row.classList.add('is-spotlight'); });
+      if (rows[0].scrollIntoView) rows[0].scrollIntoView({ block: 'center', behavior: 'smooth' });
+      window.setTimeout(function () {
+        rows.forEach(function (row) { row.classList.remove('is-spotlight'); });
+      }, 2400);
+    }, 30);
+  }
+
+  function runDiagAction(action) {
+    if (!action) return;
+    var target = action.target;
+    if (target === 'focus') { focusDiagNodes(action); return; }
     if (target === 'add') { switchView('nodes'); openEditor(null); return; }
     if (target === 'kv') { openModal('kv'); return; }
     if (target === 'ungrouped') { focusGroup(UNGROUPED); return; }
@@ -1661,7 +1723,9 @@
   function filteredNodes() {
     var all = nodes();
     var query = state.query.trim().toLowerCase();
+    var focus = state.diagFocus;
     return all.filter(function (node) {
+      if (focus && focus.ids.indexOf(node.id) === -1) return false;
       if (state.filterType !== 'all' && node.type !== state.filterType) return false;
       if (state.filterStatus === 'enabled' && !node.enabled) return false;
       if (state.filterStatus === 'disabled' && node.enabled) return false;
@@ -1712,7 +1776,15 @@
     var query = state.query.trim().toLowerCase();
     var filtered = viewNodes();
 
-    el.nodeCountLabel.textContent = query || state.filterType !== 'all' || state.filterGroup !== 'all' || state.filterStatus !== 'all'
+    if (el.focusBanner) {
+      el.focusBanner.hidden = !state.diagFocus;
+      if (state.diagFocus && el.focusBannerText) {
+        el.focusBannerText.textContent = state.diagFocus.label + ' · 已筛出 ' + filtered.length + ' 个相关节点，可直接编辑';
+      }
+    }
+
+    el.nodeCountLabel.textContent = query || state.filterType !== 'all' || state.filterGroup !== 'all' ||
+      state.filterStatus !== 'all' || state.diagFocus
       ? filtered.length + ' / ' + all.length + ' 个节点'
       : '共 ' + all.length + ' 个节点';
 
@@ -2160,6 +2232,7 @@
     state.filterType = 'all';
     if (el.filterType) el.filterType.value = 'all';
     state.filterStatus = 'all';
+    state.diagFocus = null;
     if (el.filterStatus) el.filterStatus.value = 'all';
     state.filterGroup = value;
     if (el.filterGroup) el.filterGroup.value = value;
@@ -5355,6 +5428,7 @@
     state.filterType = 'all';
     state.filterGroup = 'all';
     state.filterStatus = 'all';
+    state.diagFocus = null;
     if (el.nodeSearch) el.nodeSearch.value = '';
     if (el.filterType) el.filterType.value = 'all';
     if (el.filterGroup) el.filterGroup.value = 'all';
@@ -5420,8 +5494,10 @@
       toast('已切换到 ' + SUB_FORMAT_META[next].label + '，复制后即可得到对应链接', 'info');
     });
     on(el.diagList, 'click', function (event) {
-      var button = event.target.closest('[data-diag-action]');
-      if (button) runDiagAction(button.dataset.diagAction);
+      var button = event.target.closest('[data-diag-index]');
+      if (!button) return;
+      var issue = state.diagIssues[Number(button.dataset.diagIndex)];
+      if (issue) runDiagAction(issue.action);
     });
 
     [el.themeToggle, el.mobileTheme].forEach(function (button) {
@@ -5477,6 +5553,7 @@
     [el.filterReset, el.emptyReset].forEach(function (button) {
       button.addEventListener('click', resetFilters);
     });
+    on(el.focusBannerClear, 'click', resetFilters);
 
     on(el.groupAdd, 'click', function () { openGroupEditor(null); });
     on(el.groupCancel, 'click', closeGroupEditor);
