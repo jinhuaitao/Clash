@@ -57,6 +57,29 @@
     { key: 'telegram', name: '📲 电报信息' }
   ];
 
+  /* 策略组类型：与 Worker 的 GROUP_STRATEGIES 保持一致。
+     select 是旧版唯一行为，其余三种让客户端自己做延迟探测与切换。 */
+  var GROUP_STRATEGIES = ['select', 'url-test', 'fallback', 'load-balance'];
+  var STRATEGY_META = {
+    'select': { label: '手动选择', short: '手动' },
+    'url-test': { label: '自动测速', short: '测速' },
+    'fallback': { label: '故障转移', short: '转移' },
+    'load-balance': { label: '负载均衡', short: '负载' }
+  };
+  var DEFAULT_HEALTH_URL = 'https://www.gstatic.com/generate_204';
+  var HEALTH_INTERVAL_MIN = 30;
+  var HEALTH_INTERVAL_MAX = 3600;
+  var HEALTH_TOLERANCE_MAX = 1000;
+
+  /* 订阅格式：与 Worker 的 SUB_FORMATS / meta.subFormats 对应。
+     clash 不加任何查询参数，老订阅链接逐字不变。 */
+  var SUB_FORMATS = ['clash', 'base64', 'uri'];
+  var SUB_FORMAT_META = {
+    clash: { label: 'Clash YAML', hint: 'Mihomo / Stash / Clash Verge 使用', note: 'Clash YAML · 包含访问令牌，请妥善保管' },
+    base64: { label: 'Base64 订阅', hint: 'Shadowrocket / v2rayN / Quantumult 使用', note: 'Base64 订阅 · 包含访问令牌，请妥善保管' },
+    uri: { label: 'URI 列表', hint: '纯文本分享链接，便于调试或二次导入', note: 'URI 列表 · 包含访问令牌，请妥善保管' }
+  };
+
   var RESERVED_NAMES = new Set([
     MAIN_GROUP, '🇺🇸欧美节点', '🇯🇵日韩节点', '🇭🇰港台节点', '📶中转节点',
     '💬ChatGPT', 'ⒼGoogle', '📺YOUTUBE', '📲 电报信息',
@@ -107,6 +130,12 @@
     query: '',
     filterType: 'all',
     filterGroup: 'all',
+    filterStatus: 'all',
+    // 概览订阅卡片与预览页共用同一份格式，避免「预览是 A、复制的是 B」
+    subFormat: 'clash',
+    cmdQuery: '',
+    cmdIndex: 0,
+    cmdItems: [],
     groupFormId: null,
     groupBusy: false,
     preview: '',
@@ -343,6 +372,9 @@
     el.subUrlText = $('#sub-url-text');
     el.subReveal = $('#sub-reveal');
     el.subCopy = $('#sub-copy');
+    el.subFormats = $('#sub-formats');
+    el.subFormatNote = $('#sub-format-note');
+    el.subFormatHint = $('#sub-format-hint');
 
     el.statTotal = $('#stat-total');
     el.statEnabled = $('#stat-enabled');
@@ -360,6 +392,12 @@
     el.sysRev = $('#sys-rev');
     el.sysUpdated = $('#sys-updated');
     el.sysHealth = $('#sys-health');
+    el.subInfoState = $('#sub-info-state');
+    el.subInfoList = $('#sub-info-list');
+    el.expireTrack = $('#expire-track');
+    el.expireFill = $('#expire-fill');
+    el.diagState = $('#diag-state');
+    el.diagList = $('#diag-list');
 
     el.storageCard = $('#storage-card');
     el.storageDot = $('#storage-dot');
@@ -376,6 +414,7 @@
     el.nodeSearch = $('#node-search');
     el.filterType = $('#filter-type');
     el.filterGroup = $('#filter-group');
+    el.filterStatus = $('#filter-status');
     el.filterReset = $('#filter-reset');
     el.nodeCountLabel = $('#node-count-label');
     el.nodeHead = $('.node-head');
@@ -399,6 +438,12 @@
     el.groupFormSub = $('#group-form-sub');
     el.groupName = $('#group-name');
     el.groupIcon = $('#group-icon');
+    el.groupStrategy = $('#group-strategy');
+    el.groupHealthUrl = $('#group-health-url');
+    el.groupHealthRow = $('#group-health-row');
+    el.groupHealthInterval = $('#group-health-interval');
+    el.groupToleranceField = $('#group-tolerance-field');
+    el.groupHealthTolerance = $('#group-health-tolerance');
     el.groupSave = $('#group-save');
     el.groupSaveLabel = $('#group-save-label');
     el.groupSaveSpinner = $('#group-save-spinner');
@@ -409,6 +454,7 @@
     el.heroAdd = $('#hero-add');
     el.heroPreview = $('#hero-preview');
     el.previewRefresh = $('#preview-refresh');
+    el.previewFormat = $('#preview-format');
     el.previewDownload = $('#preview-download');
     el.previewCopy = $('#preview-copy');
     el.previewSubUrl = $('#preview-sub-url');
@@ -566,6 +612,9 @@
     el.linksCopyAll = $('#links-copy-all');
     el.linksConfirm = $('#links-confirm');
     el.linksFootNote = $('#links-foot-note');
+    el.cmdLayer = $('#cmd-layer');
+    el.cmdInput = $('#cmd-input');
+    el.cmdList = $('#cmd-list');
     el.toasts = $('#toasts');
     el.themeColor = $('meta[name="theme-color"]');
   }
@@ -977,9 +1026,14 @@
     state.previewLoading = false;
     state.subRevealed = false;
     state.mutating = false;
+    state.subFormat = 'clash';
+    state.cmdQuery = '';
+    state.cmdIndex = 0;
+    state.cmdItems = [];
     state.query = '';
     state.filterType = 'all';
     state.filterGroup = 'all';
+    state.filterStatus = 'all';
     state.groupFormId = null;
     state.groupBusy = false;
     state.editingId = null;
@@ -1169,7 +1223,16 @@
     renderNodeList();
     renderGroups();
     renderSubUrls();
+    renderPreviewFormatUi();
     renderPreviewGroups();
+  }
+
+  function renderPreviewFormatUi() {
+    if (!el.previewFormat) return;
+    var format = currentSubFormat();
+    $$('[data-preview-format]', el.previewFormat).forEach(function (item) {
+      item.classList.toggle('is-active', item.dataset.previewFormat === format);
+    });
   }
 
   function renderChrome() {
@@ -1352,6 +1415,8 @@
     el.sysHealth.classList.toggle('soft-ok', healthy);
 
     renderSubUrls();
+    renderSubscriptionInfo();
+    renderDiagnostics();
   }
 
   function maskToken(url) {
@@ -1361,12 +1426,193 @@
     });
   }
 
+  /* ---- 订阅信息：把响应头里那几个数字翻译成人能看懂的状态 ---- */
+
+  function expireDaysLeft(expire) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(expire || ''))) return null;
+    var end = Date.parse(String(expire) + 'T23:59:59Z');
+    if (Number.isNaN(end)) return null;
+    return Math.ceil((end - Date.now()) / 86400000);
+  }
+
+  function renderSubscriptionInfo() {
+    if (!el.subInfoList) return;
+    var info = (state.config && state.config.subscription) || {};
+    var total = Number(info.totalGB) > 0 ? Number(info.totalGB) : 0;
+    var days = expireDaysLeft(info.expire);
+    var status = '—';
+    var tone = '';
+    if (days !== null) {
+      if (days < 0) { status = '已过期 ' + Math.abs(days) + ' 天'; tone = 'is-warning'; }
+      else if (days === 0) { status = '今天到期'; tone = 'is-warning'; }
+      else { status = '剩余 ' + days + ' 天'; tone = days <= 7 ? 'is-warning' : 'is-ok'; }
+    }
+
+    el.subInfoList.innerHTML = [
+      '<li><span class="kv-key">' + icon('gauge') + '流量上限</span><span class="kv-val">' +
+        (total ? esc(total + ' GB') : '未设置') + '</span></li>',
+      '<li><span class="kv-key">' + icon('calendar') + '到期日期</span><span class="kv-val">' +
+        (info.expire ? esc(info.expire) : '未设置') + '</span></li>',
+      '<li><span class="kv-key">' + icon('info') + '有效期</span><span class="kv-val ' + tone + '">' +
+        esc(status) + '</span></li>'
+    ].join('');
+
+    // 条形按 30 天刻度显示剩余量；宽度与颜色走 CSSOM，控制台 CSP 不接受内联 style 属性
+    if (el.expireTrack) {
+      var show = days !== null && days >= 0;
+      el.expireTrack.hidden = !show;
+      if (show && el.expireFill) {
+        el.expireFill.style.width = Math.max(2, Math.min(100, Math.round(days / 30 * 100))) + '%';
+        el.expireFill.style.background = days <= 7
+          ? 'linear-gradient(90deg, var(--danger), var(--warning))'
+          : 'linear-gradient(90deg, var(--success), var(--accent-3))';
+        el.expireTrack.title = '按 30 天刻度显示剩余天数：' + days + ' 天';
+      }
+    }
+    if (el.subInfoState) {
+      el.subInfoState.textContent = !total && days === null
+        ? '未设置'
+        : (days !== null && days < 0 ? '已过期' : '展示中');
+      el.subInfoState.classList.toggle('soft-ok', !!total || days !== null);
+    }
+  }
+
+  /* ---- 配置体检：只读地扫一遍当前配置，每条结论都能跳到对应页面 ---- */
+
+  function diagnostics() {
+    var list = nodes();
+    var enabled = enabledNodes();
+    var meta = state.meta || {};
+    var issues = [];
+    var add = function (level, title, text, action) {
+      issues.push({ level: level, title: title, text: text, action: action || null });
+    };
+
+    if (!meta.hasAuthToken) {
+      add('danger', '订阅令牌未配置', '客户端暂时拿不到订阅，请在设置页生成 AUTH_TOKEN。', { label: '去设置', target: 'settings' });
+    }
+    if (!meta.kv || meta.readonly) {
+      add('danger', 'KV 存储未连接', '当前是只读模式，任何修改都无法保存。', { label: '绑定步骤', target: 'kv' });
+    }
+    if (meta.corrupted) add('danger', '配置数据异常', '已载入空配置，保存前请确认当前列表是否正确。', null);
+    if (!list.length) {
+      add('warn', '还没有节点', '添加第一个节点后，订阅才会包含代理。', { label: '添加节点', target: 'add' });
+    } else if (!enabled.length) {
+      add('danger', '所有节点都已停用', '客户端刷新订阅后会拿到一份空配置。', { label: '查看节点', target: 'nodes' });
+    }
+
+    var ungrouped = list.filter(function (node) { return !nodeGroup(node); }).length;
+    if (ungrouped) {
+      add('warn', ungrouped + ' 个节点未分组', '这些节点只出现在全局选择组，不会进入任何地区策略组。', { label: '查看', target: 'ungrouped' });
+    }
+
+    var seen = {};
+    var dupes = 0;
+    list.forEach(function (node) {
+      var key = String(node.server || '').toLowerCase() + ':' + node.port;
+      if (seen[key]) dupes += 1;
+      else seen[key] = true;
+    });
+    if (dupes) {
+      add('warn', dupes + ' 处重复端点', '同一服务器与端口出现多次，客户端里会挤着一批难以区分的线路。', { label: '查看节点', target: 'nodes' });
+    }
+
+    var realityBad = enabled.filter(function (node) {
+      return node.type === 'vless' && node.reality && (!node.publicKey || !node.servername);
+    }).length;
+    if (realityBad) {
+      add('warn', realityBad + ' 个 Reality 节点信息不完整', '缺少公钥或 SNI 时，客户端通常无法建立连接。', { label: '查看节点', target: 'nodes' });
+    }
+
+    var insecure = enabled.filter(function (node) { return !!node.skipCertVerify; }).length;
+    if (insecure) {
+      add('warn', insecure + ' 个节点跳过了证书校验', '仅应在自签证书且链路可信时开启，公网节点建议保持校验。', { label: '查看节点', target: 'nodes' });
+    }
+
+    if (list.length) {
+      var emptyGroups = groups().filter(function (group) {
+        return !list.some(function (node) { return nodeGroupId(node) === group.id; });
+      }).length;
+      if (emptyGroups) {
+        add('info', emptyGroups + ' 个分组还没有节点', '空分组不会写入订阅，加入节点后自动出现。', { label: '分组管理', target: 'groups' });
+      }
+    }
+    if (meta.authSource === 'environment') {
+      add('info', '订阅令牌来自环境变量', '在设置页生成令牌后可由控制台统一管理，轮换无需重新部署。', { label: '去设置', target: 'settings' });
+    }
+    return issues;
+  }
+
+  function renderDiagnostics() {
+    if (!el.diagList) return;
+    var issues = diagnostics();
+    var danger = issues.filter(function (item) { return item.level === 'danger'; }).length;
+    var warn = issues.filter(function (item) { return item.level === 'warn'; }).length;
+    if (el.diagState) {
+      el.diagState.textContent = !issues.length
+        ? '全部正常'
+        : (danger ? danger + ' 项需处理' : warn + ' 项建议');
+      el.diagState.classList.toggle('soft-ok', !issues.length);
+    }
+    if (!issues.length) {
+      el.diagList.innerHTML = '<div class="diag-empty">' + icon('check') + '节点、分组与令牌都已就绪，订阅可以正常下发。</div>';
+      return;
+    }
+    el.diagList.innerHTML = issues.map(function (item) {
+      var action = item.action
+        ? '<button class="diag-action" type="button" data-diag-action="' + esc(item.action.target) + '">' + esc(item.action.label) + '</button>'
+        : '';
+      var level = item.level === 'info' ? '' : ' is-' + item.level;
+      return '<div class="diag-item' + level + '"><span class="diag-dot"></span>' +
+        '<div class="diag-text"><b>' + esc(item.title) + '</b>' + esc(item.text) + '</div>' + action + '</div>';
+    }).join('');
+  }
+
+  function runDiagAction(target) {
+    if (target === 'add') { switchView('nodes'); openEditor(null); return; }
+    if (target === 'kv') { openModal('kv'); return; }
+    if (target === 'ungrouped') { focusGroup(UNGROUPED); return; }
+    if (VIEW_META[target]) switchView(target);
+  }
+
+  function currentSubFormat() {
+    var allowed = (state.meta && Array.isArray(state.meta.subFormats) && state.meta.subFormats.length)
+      ? state.meta.subFormats
+      : SUB_FORMATS;
+    return allowed.indexOf(state.subFormat) !== -1 ? state.subFormat : 'clash';
+  }
+
   function subUrlValue() {
-    if (!state.meta || !state.meta.subUrl) return '';
-    return state.meta.subUrl;
+    var base = state.meta && state.meta.subUrl;
+    if (!base) return '';
+    var format = currentSubFormat();
+    // clash 不带任何参数：已分发出去的旧链接行为逐字不变
+    if (format === 'clash') return base;
+    return base + (base.indexOf('?') === -1 ? '?' : '&') + 'format=' + encodeURIComponent(format);
+  }
+
+  function renderSubUrlFormats() {
+    var format = currentSubFormat();
+    var info = SUB_FORMAT_META[format] || SUB_FORMAT_META.clash;
+    $$('[data-sub-format]', el.subFormats || document).forEach(function (button) {
+      button.classList.toggle('is-active', button.dataset.subFormat === format);
+    });
+    if (el.subFormatNote) el.subFormatNote.textContent = info.hint;
+    if (el.subFormatHint) el.subFormatHint.textContent = info.note;
+  }
+
+  /* 切换订阅格式的唯一入口：链接卡片、预览按钮、预览正文一起同步 */
+  function setSubFormat(format) {
+    if (SUB_FORMATS.indexOf(format) === -1 || format === state.subFormat) return;
+    state.subFormat = format;
+    renderSubUrls();
+    renderPreviewFormatUi();
+    state.previewDirty = true;
+    if (state.view === 'preview') loadPreview(true);
   }
 
   function renderSubUrls() {
+    renderSubUrlFormats();
     var url = subUrlValue();
     var display = url
       ? (state.subRevealed ? url : maskToken(url))
@@ -1417,6 +1663,8 @@
     var query = state.query.trim().toLowerCase();
     return all.filter(function (node) {
       if (state.filterType !== 'all' && node.type !== state.filterType) return false;
+      if (state.filterStatus === 'enabled' && !node.enabled) return false;
+      if (state.filterStatus === 'disabled' && node.enabled) return false;
       if (state.filterGroup === UNGROUPED) {
         if (nodeGroup(node)) return false;
       } else if (state.filterGroup !== 'all' && nodeGroupId(node) !== state.filterGroup) {
@@ -1464,7 +1712,7 @@
     var query = state.query.trim().toLowerCase();
     var filtered = viewNodes();
 
-    el.nodeCountLabel.textContent = query || state.filterType !== 'all' || state.filterGroup !== 'all'
+    el.nodeCountLabel.textContent = query || state.filterType !== 'all' || state.filterGroup !== 'all' || state.filterStatus !== 'all'
       ? filtered.length + ' / ' + all.length + ' 个节点'
       : '共 ' + all.length + ' 个节点';
 
@@ -1554,6 +1802,30 @@
     return randomId(prefix || 'g_');
   }
 
+  function groupStrategy(group) {
+    var value = group && group.strategy;
+    return GROUP_STRATEGIES.indexOf(value) !== -1 ? value : 'select';
+  }
+
+  /* 非 select 策略才显示健康检查参数；容差只对 url-test 有意义 */
+  function syncGroupStrategyUi() {
+    var value = el.groupStrategy ? el.groupStrategy.value : 'select';
+    var active = GROUP_STRATEGIES.indexOf(value) !== -1 ? value : 'select';
+    var auto = active !== 'select';
+    if (el.groupHealthRow) el.groupHealthRow.hidden = !auto;
+    if (el.groupToleranceField) el.groupToleranceField.hidden = !(auto && active === 'url-test');
+    if (el.groupHealthUrl) el.groupHealthUrl.disabled = !auto;
+  }
+
+  function groupHealthFromForm(strategy, url, interval, tolerance) {
+    if (strategy === 'select') return { strategy: 'select' };
+    var out = { strategy: strategy };
+    if (url) out.url = url;
+    if (interval) out.interval = Number(interval);
+    if (strategy === 'url-test' && tolerance) out.tolerance = Number(tolerance);
+    return out;
+  }
+
   function renderGroups() {
     if (!el.groupList) return;
     if (!state.config) {
@@ -1579,6 +1851,11 @@
       } else if (group.icon) {
         badge = '<span class="group-badge is-soft" title="' + esc(group.icon) + '">自定义图标</span>';
       }
+      var strategy = groupStrategy(group);
+      if (strategy !== 'select') {
+        badge += '<span class="group-badge is-strategy" title="客户端按' + esc(STRATEGY_META[strategy].label) + '自动切换">' +
+          esc(STRATEGY_META[strategy].short) + '</span>';
+      }
       // 共享分组对成员只读：不给按钮，避免点了才发现 403
       var actions = mine
         ? '<div class="group-actions">' +
@@ -1598,6 +1875,7 @@
           '<div class="group-sub">' + (members.length
             ? members.length + ' 个节点 · ' + active + ' 个已启用'
             : '还没有节点 · 加入节点后才会写入订阅') +
+            (strategy !== 'select' ? ' · ' + esc(STRATEGY_META[strategy].label) : '') +
             (mine ? '' : ' · 由所有者维护') + '</div>' +
         '</div>' +
         actions +
@@ -1689,6 +1967,11 @@
     clearGroupErrors();
     setField(el.groupName, group ? group.name : '');
     setField(el.groupIcon, group ? group.icon || '' : '');
+    if (el.groupStrategy) el.groupStrategy.value = group ? groupStrategy(group) : 'select';
+    setField(el.groupHealthUrl, group && group.url ? group.url : '');
+    setField(el.groupHealthInterval, group && group.interval ? group.interval : '');
+    setField(el.groupHealthTolerance, group && Number.isInteger(group.tolerance) ? group.tolerance : '');
+    syncGroupStrategyUi();
     if (el.groupFormTitle) el.groupFormTitle.textContent = group ? '编辑分组' : '新建分组';
     if (el.groupFormSub) {
       el.groupFormSub.textContent = group
@@ -1713,7 +1996,7 @@
     renderGroups();
   }
 
-  function groupFormErrors(name, icon) {
+  function groupFormErrors(name, icon, strategy, healthUrl, healthInterval, healthTolerance) {
     var errors = [];
     if (!name) {
       errors.push({ key: 'groupName', message: '请填写分组名称' });
@@ -1735,6 +2018,21 @@
     if (icon && (icon.length > 256 || /[\s"'\\]/.test(icon) || icon.indexOf('https://') !== 0)) {
       errors.push({ key: 'groupIcon', message: '图标需为 https:// 开头、不含空格与引号的地址' });
     }
+    if (GROUP_STRATEGIES.indexOf(strategy) === -1) {
+      errors.push({ key: 'strategy', message: '请选择策略类型' });
+    } else if (strategy !== 'select') {
+      if (healthUrl && (healthUrl.length > 256 || /[\s"'\\#?]/.test(healthUrl) || healthUrl.indexOf('https://') !== 0)) {
+        errors.push({ key: 'healthUrl', message: '健康检查地址需为 https:// 开头、不含空格与引号' });
+      }
+      if (healthInterval !== '' && (!/^\d+$/.test(healthInterval) ||
+        Number(healthInterval) < HEALTH_INTERVAL_MIN || Number(healthInterval) > HEALTH_INTERVAL_MAX)) {
+        errors.push({ key: 'healthInterval', message: '检测间隔需为 ' + HEALTH_INTERVAL_MIN + '–' + HEALTH_INTERVAL_MAX + ' 秒' });
+      }
+      if (strategy === 'url-test' && healthTolerance !== '' &&
+        (!/^\d+$/.test(healthTolerance) || Number(healthTolerance) > HEALTH_TOLERANCE_MAX)) {
+        errors.push({ key: 'healthTolerance', message: '容差需为 0–' + HEALTH_TOLERANCE_MAX + ' 毫秒' });
+      }
+    }
     return errors;
   }
 
@@ -1745,24 +2043,41 @@
     var editing = state.groupFormId;
     var name = String(el.groupName.value || '').trim();
     var icon = String(el.groupIcon.value || '').trim();
-    var errors = groupFormErrors(name, icon);
+    var strategy = el.groupStrategy ? el.groupStrategy.value : 'select';
+    var healthUrl = String((el.groupHealthUrl && el.groupHealthUrl.value) || '').trim();
+    var healthInterval = String((el.groupHealthInterval && el.groupHealthInterval.value) || '').trim();
+    var healthTolerance = String((el.groupHealthTolerance && el.groupHealthTolerance.value) || '').trim();
+    var errors = groupFormErrors(name, icon, strategy, healthUrl, healthInterval, healthTolerance);
     if (errors.length) {
       showGroupErrors(errors);
       return;
     }
 
+    var health = groupHealthFromForm(strategy, healthUrl, healthInterval, healthTolerance);
     var owner = isOwner();
-    var list = (owner ? groups() : ownGroups()).map(function (group) { return Object.assign({}, group); });
+    /* 只保留已知字段，避免把界面上的临时属性写回 KV；
+       其他分组的策略参数原样带上，编辑其中一个不会清掉别的分组配置。 */
+    var list = (owner ? groups() : ownGroups()).map(function (group) {
+      var copy = { id: group.id, name: group.name, icon: group.icon || '' };
+      var existing = groupStrategy(group);
+      if (existing !== 'select') {
+        copy.strategy = existing;
+        if (group.url) copy.url = group.url;
+        if (group.interval) copy.interval = group.interval;
+        if (Number.isInteger(group.tolerance)) copy.tolerance = group.tolerance;
+      }
+      return copy;
+    });
+    var patch = Object.assign({ id: editing, name: name, icon: icon }, health);
     if (editing) {
-      list = list.map(function (group) {
-        return group.id === editing ? Object.assign({}, group, { name: name, icon: icon }) : group;
-      });
+      list = list.map(function (group) { return group.id === editing ? patch : group; });
     } else {
       if (list.length >= groupLimit()) {
         showGroupErrors([{ key: 'groupName', message: '分组数量不能超过 ' + groupLimit() + ' 个' }]);
         return;
       }
-      list.push({ id: newGroupId(owner ? 'g_' : 'mg_'), name: name, icon: icon });
+      patch.id = newGroupId(owner ? 'g_' : 'mg_');
+      list.push(patch);
     }
 
     setGroupBusy(true);
@@ -1844,6 +2159,8 @@
     if (el.nodeSearch) el.nodeSearch.value = '';
     state.filterType = 'all';
     if (el.filterType) el.filterType.value = 'all';
+    state.filterStatus = 'all';
+    if (el.filterStatus) el.filterStatus.value = 'all';
     state.filterGroup = value;
     if (el.filterGroup) el.filterGroup.value = value;
     switchView('nodes');
@@ -3383,17 +3700,8 @@
     return new TextDecoder().decode(bytes);
   }
 
-  function encodeBase64Text(value) {
-    var bytes = new TextEncoder().encode(value);
-    var binary = '';
-    for (var i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-    return window.btoa(binary);
-  }
-
-  function encodeBase64Url(value) {
-    return encodeBase64Text(value).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-  }
-
+  /* 导出方向的 base64 / 分享链接生成由 src/share-links.js 提供（build.mjs 内联到本脚本之前）。
+     解析方向仍用下面的 decodeBase64Text，两者互不干扰，也不会出现两套导出规则。 */
   function parseShareQuery(raw) {
     var out = {};
     String(raw || '').split('&').forEach(function (pair) {
@@ -3751,88 +4059,13 @@
     return { items: items, errors: errors };
   }
 
-  function shareHostForUri(server) {
-    return server.indexOf(':') !== -1 && server.charAt(0) !== '[' ? '[' + server + ']' : server;
-  }
-
-  function shareLinkForNode(node) {
-    var name = encodeURIComponent(node.name);
-    var host = shareHostForUri(node.server);
-    var params = [];
-    var push = function (key, value) {
-      if (value !== undefined && value !== null && value !== '') params.push(key + '=' + encodeURIComponent(value));
-    };
-
-    if (node.type === 'vless') {
-      var tls = !!node.tls || !!node.reality;
-      push('encryption', 'none');
-      push('security', node.reality ? 'reality' : (tls ? 'tls' : 'none'));
-      push('type', node.network || 'tcp');
-      if (tls) push('sni', node.servername);
-      if (node.fingerprint) push('fp', node.fingerprint);
-      if (node.reality) {
-        push('pbk', node.publicKey);
-        push('sid', node.shortId);
-      }
-      push('flow', node.flow);
-      if (node.network === 'ws') {
-        push('path', node.wsPath || '/');
-        push('host', node.wsHost);
-      }
-      if (node.network === 'grpc') push('serviceName', node.grpcService);
-      return 'vless://' + node.uuid + '@' + host + ':' + node.port + '?' + params.join('&') + '#' + name;
-    }
-
-    if (node.type === 'vmess') {
-      var payload = {
-        v: '2',
-        ps: node.name,
-        add: node.server,
-        port: String(node.port),
-        id: node.uuid,
-        aid: '0',
-        scy: 'auto',
-        net: node.network || 'tcp',
-        type: 'none',
-        host: node.wsHost || '',
-        path: node.network === 'grpc' ? (node.grpcService || '') : (node.wsPath || '/'),
-        tls: node.tls ? 'tls' : '',
-        sni: node.servername || ''
-      };
-      return 'vmess://' + encodeBase64Text(JSON.stringify(payload));
-    }
-
-    if (node.type === 'trojan') {
-      push('security', 'tls');
-      push('sni', node.sni);
-      if (node.skipCertVerify) push('allowInsecure', '1');
-      return 'trojan://' + encodeURIComponent(node.password) + '@' + host + ':' + node.port +
-        (params.length ? '?' + params.join('&') : '') + '#' + name;
-    }
-
-    if (node.type === 'hysteria2') {
-      push('sni', node.sni);
-      if (node.skipCertVerify) push('insecure', '1');
-      push('up', node.up);
-      push('down', node.down);
-      return 'hysteria2://' + encodeURIComponent(node.password) + '@' + host + ':' + node.port + '/?' +
-        params.join('&') + '#' + name;
-    }
-
-    if (node.type === 'ss') {
-      return 'ss://' + encodeBase64Url(node.cipher + ':' + node.password) + '@' + host + ':' + node.port + '#' + name;
-    }
-
-    throw new Error('暂不支持导出 ' + node.type + ' 协议');
-  }
-
+  /* 导出方向统一调用 thShareLink（src/share-links.js，由 build.mjs 内联）。
+     Worker 的 base64 / URI 订阅输出走的是同一个函数，两处永远不会漂移。 */
   function copyShareLink(node) {
     if (!node) return;
-    var link;
-    try {
-      link = shareLinkForNode(node);
-    } catch (err) {
-      toast(err.message || '生成分享链接失败', 'error');
+    var link = thShareLink(node);
+    if (!link) {
+      toast('该节点信息不完整，无法生成分享链接', 'error');
       return;
     }
     copyText(link, '分享链接已复制');
@@ -3929,11 +4162,8 @@
     var list = enabledNodes();
     var lines = [];
     list.forEach(function (node) {
-      try {
-        lines.push(shareLinkForNode(node));
-      } catch (err) {
-        /* skip unsupported node */
-      }
+      var link = thShareLink(node);
+      if (link) lines.push(link);
     });
     state.linksExportText = lines.join('\n');
     el.linksExport.textContent = state.linksExportText || '没有已启用的节点，暂无可导出的链接。';
@@ -4582,7 +4812,9 @@
 
     state.previewPromise = (async function () {
       try {
-        var text = await request('/api/preview', { raw: true });
+        var format = currentSubFormat();
+        var path = format === 'clash' ? '/api/preview' : '/api/preview?format=' + encodeURIComponent(format);
+        var text = await request(path, { raw: true });
         state.preview = text;
         state.previewDirty = false;
         renderPreview();
@@ -4612,7 +4844,8 @@
     var opts = options || {};
     var text = state.preview || '';
     var keepScroll = opts.preserveScroll ? el.codeBody.scrollTop : 0;
-    el.yamlCode.innerHTML = highlightYaml(text);
+    // 非 YAML 格式只做逐行转义，保留 .code-line / .lc 结构，搜索与命中跳转仍然可用
+    el.yamlCode.innerHTML = currentSubFormat() === 'clash' ? highlightYaml(text) : highlightPlain(text);
     var lines = text ? text.split('\n').length : 0;
     var bytes = new TextEncoder().encode(text).length;
     el.codeLines.textContent = lines + ' 行';
@@ -4800,10 +5033,26 @@
     }).join('');
   }
 
+  /* base64 是一整行超长文本，不需要 YAML 着色；保持相同的 DOM 结构，
+     搜索、行号、复制与下载才不用各写一套 */
+  function highlightPlain(text) {
+    return text.split('\n').map(function (line, index) {
+      return '<div class="code-line"><span class="ln">' + (index + 1) + '</span>' +
+        '<span class="lc">' + (esc(line) || ' ') + '</span></div>';
+    }).join('');
+  }
+
+  function previewFormatMeta() {
+    var format = currentSubFormat();
+    if (format === 'base64') return { label: 'Base64 订阅', ext: 'txt', mime: 'text/plain;charset=utf-8' };
+    if (format === 'uri') return { label: 'URI 列表', ext: 'txt', mime: 'text/plain;charset=utf-8' };
+    return { label: 'Clash 配置', ext: 'yaml', mime: 'text/yaml;charset=utf-8' };
+  }
+
   async function copyYaml() {
     var text = state.preview && !state.previewDirty ? state.preview : await loadPreview();
     if (!text) return;
-    await copyText(text, 'Clash 配置已复制');
+    await copyText(text, previewFormatMeta().label + '已复制');
   }
 
   async function downloadYaml() {
@@ -4815,16 +5064,117 @@
       String(now.getDate()).padStart(2, '0') + '-' +
       String(now.getHours()).padStart(2, '0') +
       String(now.getMinutes()).padStart(2, '0');
-    var blob = new Blob([text], { type: 'text/yaml;charset=utf-8' });
+    var info = previewFormatMeta();
+    var blob = new Blob([text], { type: info.mime });
     var url = URL.createObjectURL(blob);
     var link = document.createElement('a');
     link.href = url;
-    link.download = 'transit-hub-' + stamp + '.yaml';
+    link.download = 'transit-hub-' + stamp + '.' + info.ext;
     document.body.appendChild(link);
     link.click();
     link.remove();
     window.setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
     toast('配置已开始下载', 'success');
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* command palette                                                     */
+  /* ------------------------------------------------------------------ */
+
+  function commandItems() {
+    var items = [];
+    var views = [
+      { view: 'overview', label: '概览', icon: 'grid' },
+      { view: 'nodes', label: '节点管理', icon: 'server' },
+      { view: 'groups', label: '分组管理', icon: 'layers' },
+      { view: 'preview', label: '订阅预览', icon: 'code' },
+      { view: 'users', label: '用户管理', icon: 'user', hint: '仅所有者', ownerOnly: true },
+      { view: 'settings', label: '设置', icon: 'sliders' }
+    ];
+    views.forEach(function (item) {
+      if (item.ownerOnly && !isOwner()) return;
+      items.push({
+        group: '前往', icon: item.icon, label: item.label, hint: item.hint || '',
+        run: function () { switchView(item.view); }
+      });
+    });
+    var actions = [
+      { icon: 'plus', label: '添加节点', hint: '', run: function () { switchView('nodes'); openEditor(null); } },
+      { icon: 'link', label: '复制订阅链接', hint: '当前格式', run: function () { copySubscription(); } },
+      { icon: 'clipboard', label: '导入和分享链接', hint: '', run: function () { openLinks('import'); } },
+      { icon: 'refresh', label: '刷新订阅预览', hint: '', run: function () { switchView('preview'); loadPreview(true); } },
+      { icon: 'download', label: '导出配置备份', hint: '仅所有者', ownerOnly: true, run: function () { exportBackup(); } },
+      { icon: 'refresh', label: '重新载入配置', hint: '', run: function () { reloadConfig(); } },
+      { icon: 'moon', label: '切换深浅色', hint: '', run: function () { toggleTheme(); } },
+      { icon: 'logout', label: '退出登录', hint: '', run: function () { logout(''); } }
+    ];
+    actions.forEach(function (item) {
+      if (item.ownerOnly && !isOwner()) return;
+      items.push({ group: '操作', icon: item.icon, label: item.label, hint: item.hint, run: item.run });
+    });
+    return items;
+  }
+
+  function filteredCommands() {
+    var query = state.cmdQuery.trim().toLowerCase();
+    var all = commandItems();
+    if (!query) return all;
+    return all.filter(function (item) {
+      return (item.label + ' ' + item.hint + ' ' + item.group).toLowerCase().indexOf(query) !== -1;
+    });
+  }
+
+  function renderCommands() {
+    if (!el.cmdList) return;
+    var items = filteredCommands();
+    state.cmdItems = items;
+    if (state.cmdIndex >= items.length) state.cmdIndex = items.length ? items.length - 1 : 0;
+    if (state.cmdIndex < 0) state.cmdIndex = 0;
+    if (!items.length) {
+      el.cmdList.innerHTML = '<div class="cmd-empty">没有匹配的命令</div>';
+      return;
+    }
+    var html = '';
+    var lastGroup = '';
+    items.forEach(function (item, index) {
+      if (item.group !== lastGroup) {
+        html += '<div class="cmd-group">' + esc(item.group) + '</div>';
+        lastGroup = item.group;
+      }
+      var active = index === state.cmdIndex;
+      html += '<button class="cmd-item' + (active ? ' is-active' : '') + '" type="button" role="option" ' +
+        'data-cmd-index="' + index + '" aria-selected="' + (active ? 'true' : 'false') + '">' +
+        '<span class="cmd-item-icon">' + icon(item.icon) + '</span>' +
+        '<span class="cmd-item-text">' + esc(item.label) + '</span>' +
+        (item.hint ? '<span class="cmd-item-hint">' + esc(item.hint) + '</span>' : '') +
+        '</button>';
+    });
+    el.cmdList.innerHTML = html;
+  }
+
+  function openCommandPalette() {
+    if (!el.cmdLayer || el.app.hidden) return;
+    state.cmdQuery = '';
+    state.cmdIndex = 0;
+    if (el.cmdInput) el.cmdInput.value = '';
+    renderCommands();
+    openModal('cmd');
+  }
+
+  function runCommand(index) {
+    var item = state.cmdItems[index];
+    if (!item) return;
+    closeModal('cmd', true);
+    item.run();
+  }
+
+  function moveCommand(delta) {
+    var total = state.cmdItems.length;
+    if (!total) return;
+    state.cmdIndex = (state.cmdIndex + delta + total) % total;
+    renderCommands();
+    var active = $$('.cmd-item.is-active', el.cmdList)[0];
+    if (active && active.scrollIntoView) active.scrollIntoView({ block: 'nearest' });
   }
 
   /* ------------------------------------------------------------------ */
@@ -4840,11 +5190,13 @@
     if (name === 'generic') return el.genericLayer;
     if (name === 'kv') return el.kvLayer;
     if (name === 'links') return el.linksLayer;
+    if (name === 'cmd') return el.cmdLayer;
     return null;
   }
 
   function modalFocusTarget(name) {
     if (name === 'generic') return el.genericOk;
+    if (name === 'cmd') return el.cmdInput;
     if (name === 'kv') return el.kvCopyName;
     if (name === 'links') {
       if (state.linksTab === 'export') return el.linksCopyAll;
@@ -5002,9 +5354,11 @@
     state.query = '';
     state.filterType = 'all';
     state.filterGroup = 'all';
+    state.filterStatus = 'all';
     if (el.nodeSearch) el.nodeSearch.value = '';
     if (el.filterType) el.filterType.value = 'all';
     if (el.filterGroup) el.filterGroup.value = 'all';
+    if (el.filterStatus) el.filterStatus.value = 'all';
     renderNodeList();
   }
 
@@ -5057,6 +5411,18 @@
       state.subRevealed = !state.subRevealed;
       renderSubUrls();
     });
+    on(el.subFormats, 'click', function (event) {
+      var button = event.target.closest('[data-sub-format]');
+      if (!button) return;
+      var next = button.dataset.subFormat;
+      if (SUB_FORMATS.indexOf(next) === -1 || next === state.subFormat) return;
+      setSubFormat(next);
+      toast('已切换到 ' + SUB_FORMAT_META[next].label + '，复制后即可得到对应链接', 'info');
+    });
+    on(el.diagList, 'click', function (event) {
+      var button = event.target.closest('[data-diag-action]');
+      if (button) runDiagAction(button.dataset.diagAction);
+    });
 
     [el.themeToggle, el.mobileTheme].forEach(function (button) {
       button.addEventListener('click', toggleTheme);
@@ -5104,6 +5470,10 @@
       state.filterGroup = el.filterGroup.value;
       renderNodeList();
     });
+    on(el.filterStatus, 'change', function () {
+      state.filterStatus = el.filterStatus.value;
+      renderNodeList();
+    });
     [el.filterReset, el.emptyReset].forEach(function (button) {
       button.addEventListener('click', resetFilters);
     });
@@ -5112,6 +5482,7 @@
     on(el.groupCancel, 'click', closeGroupEditor);
     on(el.groupForm, 'submit', submitGroupForm);
     on(el.groupForm, 'input', clearGroupErrors);
+    on(el.groupStrategy, 'change', syncGroupStrategyUi);
     if (el.groupList) {
       on(el.groupList, 'click', function (event) {
         var move = event.target.closest('[data-group-move]');
@@ -5381,8 +5752,34 @@
       if (file) importBackupFile(file);
     });
     on(el.previewRefresh, 'click', function () { loadPreview(true); });
+    on(el.previewFormat, 'click', function (event) {
+      var button = event.target.closest('[data-preview-format]');
+      if (button) setSubFormat(button.dataset.previewFormat);
+    });
     on(el.previewCopy, 'click', copyYaml);
     on(el.previewDownload, 'click', downloadYaml);
+
+    on(el.cmdInput, 'input', function () {
+      state.cmdQuery = el.cmdInput.value;
+      state.cmdIndex = 0;
+      renderCommands();
+    });
+    on(el.cmdInput, 'keydown', function (event) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        moveCommand(1);
+      } else if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        moveCommand(-1);
+      } else if (event.key === 'Enter') {
+        event.preventDefault();
+        runCommand(state.cmdIndex);
+      }
+    });
+    on(el.cmdList, 'click', function (event) {
+      var button = event.target.closest('[data-cmd-index]');
+      if (button) runCommand(Number(button.dataset.cmdIndex));
+    });
 
     if (el.previewSearch) {
       on(el.previewSearch, 'input', function () {
@@ -5442,6 +5839,7 @@
       var typing = tag === 'input' || tag === 'select' || tag === 'textarea' || event.target.isContentEditable;
 
       if (event.key === 'Escape') {
+        if (isLayerOpen(el.cmdLayer)) { closeModal('cmd'); return; }
         if (el.rowMenu && !el.rowMenu.hidden) { event.preventDefault(); closeRowMenu(false, true); return; }
         if (isLayerOpen(el.linksLayer)) { closeModal('links'); return; }
         if (isLayerOpen(el.kvLayer)) { closeModal('kv'); return; }
@@ -5449,11 +5847,19 @@
         if (isLayerOpen(el.drawerLayer)) { closeDrawer(); return; }
       }
 
+      if (!el.app.hidden && (event.metaKey || event.ctrlKey) && String(event.key).toLowerCase() === 'k') {
+        event.preventDefault();
+        if (isLayerOpen(el.cmdLayer)) closeModal('cmd');
+        else openCommandPalette();
+        return;
+      }
+
       if (!el.app.hidden && event.key === 'Tab') {
-        var activeLayer = isLayerOpen(el.linksLayer) ? el.linksLayer
-          : (isLayerOpen(el.kvLayer) ? el.kvLayer
-            : (isLayerOpen(el.genericLayer) ? el.genericLayer
-              : (isLayerOpen(el.drawerLayer) ? el.drawerLayer : null)));
+        var activeLayer = isLayerOpen(el.cmdLayer) ? el.cmdLayer
+          : (isLayerOpen(el.linksLayer) ? el.linksLayer
+            : (isLayerOpen(el.kvLayer) ? el.kvLayer
+              : (isLayerOpen(el.genericLayer) ? el.genericLayer
+                : (isLayerOpen(el.drawerLayer) ? el.drawerLayer : null))));
         if (activeLayer) trapLayerFocus(event, activeLayer);
       }
 

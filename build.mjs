@@ -22,8 +22,9 @@ if (existsSync(checkerPath)) {
   console.log('· 跳过静态检查（未找到 scripts/check.mjs）');
 }
 
-const [workerSource, staticHead, staticRules, adminTemplate, adminCss, adminJs, pkg] = await Promise.all([
+const [workerSource, shareLinks, staticHead, staticRules, adminTemplate, adminCss, adminJs, pkg] = await Promise.all([
   read('src/worker.js'),
+  read('src/share-links.js'),
   read('src/static-head.yaml'),
   read('src/rules.yaml'),
   read('admin/index.html'),
@@ -32,6 +33,11 @@ const [workerSource, staticHead, staticRules, adminTemplate, adminCss, adminJs, 
   read('package.json'),
 ]);
 
+/* 同一份分享链接生成代码同时内联进 Worker 顶层与 admin 脚本块：
+   订阅的 base64/URI 输出和控制台「导出链接」因此不可能出现规则漂移。 */
+if (/<\/script/i.test(shareLinks)) {
+  throw new Error('src/share-links.js must not contain a literal closing script tag');
+}
 if (/<\/script/i.test(adminJs)) {
   throw new Error('admin/app.js must not contain a literal closing script tag');
 }
@@ -40,10 +46,11 @@ if (/<\/style/i.test(adminCss)) {
   throw new Error('admin/app.css must not contain a literal closing style tag');
 }
 
+const combinedAdminJs = shareLinks.trimEnd() + '\n\n' + adminJs;
 try {
-  new vm.Script(adminJs, { filename: 'admin/app.js' });
+  new vm.Script(combinedAdminJs, { filename: 'admin/app.js (with share-links)' });
 } catch (err) {
-  throw new Error(`admin/app.js syntax error: ${err.message}`);
+  throw new Error(`admin script syntax error: ${err.message}`);
 }
 
 const version = JSON.parse(pkg).version;
@@ -51,7 +58,7 @@ const version = JSON.parse(pkg).version;
 let adminHtml = adminTemplate
   .replace(/__APP_VERSION__/g, version)
   .replace('/*__CSS__*/', () => adminCss)
-  .replace('/*__JS__*/', () => adminJs);
+  .replace('/*__JS__*/', () => combinedAdminJs);
 
 for (const marker of ['/*__CSS__*/', '/*__JS__*/', '__APP_VERSION__']) {
   if (adminHtml.includes(marker)) throw new Error(`Unreplaced admin marker: ${marker}`);
@@ -70,9 +77,10 @@ const escapeTemplate = value => value
 let output = workerSource
   .replace('__STATIC_HEAD__', () => escapeTemplate(staticHead.trimEnd()))
   .replace('__STATIC_RULES__', () => escapeTemplate(staticRules.trim()))
+  .replace('/*__SHARE_LINKS__*/', () => shareLinks.trimEnd())
   .replace('__ADMIN_HTML__', () => escapeTemplate(adminHtml));
 
-for (const marker of ['__STATIC_HEAD__', '__STATIC_RULES__', '__ADMIN_HTML__']) {
+for (const marker of ['__STATIC_HEAD__', '__STATIC_RULES__', '/*__SHARE_LINKS__*/', '__ADMIN_HTML__']) {
   if (output.includes(marker)) throw new Error(`Unreplaced worker marker: ${marker}`);
 }
 
@@ -84,4 +92,4 @@ await writeFile(path.join(root, 'dist/1.js'), output);
 
 const kb = value => (Buffer.byteLength(value, 'utf8') / 1024).toFixed(1) + ' KB';
 console.log(`Built dist/1.js  ·  ${kb(output)}`);
-console.log(`  worker: ${kb(workerSource)}  admin html: ${kb(adminHtml)}  css: ${kb(adminCss)}  js: ${kb(adminJs)}`);
+console.log(`  worker: ${kb(workerSource)}  admin html: ${kb(adminHtml)}  css: ${kb(adminCss)}  js: ${kb(adminJs)}  share-links: ${kb(shareLinks)}`);

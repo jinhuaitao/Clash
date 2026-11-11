@@ -4,7 +4,7 @@ export default {
   },
 }
 
-const VERSION = '2.9.0'
+const VERSION = '2.10.0'
 const CONFIG_KEY = 'config'
 const USERS_KEY = 'users'
 const MAX_NODES = 300
@@ -74,6 +74,15 @@ const DEFAULT_GROUPS = [
 const MAX_GROUPS = 24
 const GROUP_ID_RE = /^[A-Za-z0-9_-]{1,64}$/
 const GROUP_NAME_MAX = 40
+/* 策略组类型：select 是旧版唯一行为，另外三种让客户端自己做延迟探测 / 故障转移。
+   默认值刻意保持 select —— 老配置升级后 YAML 必须逐字一致。 */
+const GROUP_STRATEGIES = ['select', 'url-test', 'fallback', 'load-balance']
+const DEFAULT_HEALTH_URL = 'https://www.gstatic.com/generate_204'
+const HEALTH_INTERVAL_MIN = 30
+const HEALTH_INTERVAL_MAX = 3600
+const HEALTH_INTERVAL_DEFAULT = 300
+const HEALTH_TOLERANCE_MAX = 1000
+const SUB_FORMATS = ['clash', 'base64', 'uri']
 const TYPES = ['vless', 'hysteria2', 'trojan', 'vmess', 'ss']
 const TAGS = ['chatgpt', 'google', 'youtube', 'telegram']
 /* 写入校验与 YAML 渲染共用同一套白名单，避免两处规则漂移 */
@@ -115,6 +124,10 @@ const STATIC_HEAD = `__STATIC_HEAD__`
 const STATIC_RULES = `__STATIC_RULES__`
 const ADMIN_HTML = `__ADMIN_HTML__`
 
+/* build.mjs 会把 src/share-links.js 内联到这里：
+   Worker 的 base64 / URI 订阅输出与控制台「导出链接」共用同一份生成规则。 */
+/*__SHARE_LINKS__*/
+
 class HttpError extends Error {
   constructor(status, message, field) {
     super(message)
@@ -146,7 +159,7 @@ async function handleRequest(request, env) {
       const limited = await checkSubRateLimit(request, env)
       if (limited) return limited
       const access = await subscriptionAccess(env, token)
-      if (access) return await serveSubscription(env, access.config, headOnly)
+      if (access) return await serveSubscription(env, access.config, headOnly, request, url)
       // 令牌无效：本次请求已经在上面计过一次，这里不再重复扣配额，
       // 否则爆破者实际可用的次数只有配置值的一半
       return renderDecoy(request, headOnly)
@@ -918,6 +931,78 @@ function validateGroupIcon(value) {
   return cleaned
 }
 
+/* 健康检查地址会原样拼进 YAML，规则比图标更严：不接受 # 与 ?，
+   避免把后面的 interval / proxies 注释掉，或拼出客户端取不到的探测 URL。 */
+function sanitizeHealthUrl(input) {
+  const value = typeof input === 'string' ? input.trim() : ''
+  if (!value || value.length > 256) return ''
+  if (/[\s\u0000-\u001f\u007f"'\\#?]/.test(value)) return ''
+  if (!/^https:\/\/[A-Za-z0-9._~:/@!$&*+,;=%-]+$/.test(value)) return ''
+  return value.replace(/\/+$/, '')
+}
+
+/* 读路径宽松：坏值一律回落 select 或默认参数，绝不让 KV 里一条手工改坏的
+   分组把整份订阅拖成 500。select 不带任何探测字段，保证旧配置输出不变。 */
+function sanitizeGroupHealth(input) {
+  const raw = input && typeof input === 'object' ? input : {}
+  const strategy = typeof raw.strategy === 'string' && GROUP_STRATEGIES.includes(raw.strategy)
+    ? raw.strategy
+    : 'select'
+  if (strategy === 'select') return { strategy }
+  const url = sanitizeHealthUrl(raw.url) || DEFAULT_HEALTH_URL
+  const interval = Number.isInteger(raw.interval) &&
+    raw.interval >= HEALTH_INTERVAL_MIN && raw.interval <= HEALTH_INTERVAL_MAX
+    ? raw.interval
+    : HEALTH_INTERVAL_DEFAULT
+  const out = { strategy, url, interval }
+  if (strategy === 'url-test' && Number.isInteger(raw.tolerance) &&
+    raw.tolerance >= 0 && raw.tolerance <= HEALTH_TOLERANCE_MAX) {
+    out.tolerance = raw.tolerance
+  }
+  return out
+}
+
+/* 写路径严格：类型不认识、URL 形态不对、间隔越界都直接给 400，
+   并带上 field 让控制台能把错误标到对应输入框。 */
+function validateGroupHealth(input) {
+  const raw = input && typeof input === 'object' ? input : {}
+  const wanted = raw.strategy === undefined || raw.strategy === null || raw.strategy === ''
+    ? 'select'
+    : raw.strategy
+  if (typeof wanted !== 'string' || !GROUP_STRATEGIES.includes(wanted)) {
+    throw new HttpError(400, '策略组类型不受支持', 'strategy')
+  }
+  if (wanted === 'select') return { strategy: 'select' }
+
+  const out = { strategy: wanted }
+  if (raw.url !== undefined && raw.url !== null && raw.url !== '') {
+    const cleaned = sanitizeHealthUrl(raw.url)
+    if (!cleaned) {
+      throw new HttpError(400, '健康检查地址需为 https:// 开头、不含空格与引号', 'healthUrl')
+    }
+    out.url = cleaned
+  } else {
+    out.url = DEFAULT_HEALTH_URL
+  }
+  if (raw.interval !== undefined && raw.interval !== null && raw.interval !== '') {
+    const interval = Number(raw.interval)
+    if (!Number.isInteger(interval) || interval < HEALTH_INTERVAL_MIN || interval > HEALTH_INTERVAL_MAX) {
+      throw new HttpError(400, `检测间隔需为 ${HEALTH_INTERVAL_MIN}–${HEALTH_INTERVAL_MAX} 秒`, 'healthInterval')
+    }
+    out.interval = interval
+  } else {
+    out.interval = HEALTH_INTERVAL_DEFAULT
+  }
+  if (wanted === 'url-test' && raw.tolerance !== undefined && raw.tolerance !== null && raw.tolerance !== '') {
+    const tolerance = Number(raw.tolerance)
+    if (!Number.isInteger(tolerance) || tolerance < 0 || tolerance > HEALTH_TOLERANCE_MAX) {
+      throw new HttpError(400, `容差需为 0–${HEALTH_TOLERANCE_MAX} 毫秒`, 'healthTolerance')
+    }
+    out.tolerance = tolerance
+  }
+  return out
+}
+
 /* 读路径宽松：坏项逐条丢弃，id 与名称去重，超量截断，绝不抛错。
    KV 里被手工改坏或旧版本写入的分组不能把整份订阅拖成 500。 */
 function sanitizeGroups(input) {
@@ -936,7 +1021,7 @@ function sanitizeGroups(input) {
     if (ids.has(raw.id) || names.has(nameKey)) continue
     ids.add(raw.id)
     names.add(nameKey)
-    out.push({ id: raw.id, name, icon: sanitizeGroupIcon(raw.icon) })
+    out.push({ id: raw.id, name, icon: sanitizeGroupIcon(raw.icon), ...sanitizeGroupHealth(raw) })
     if (out.length >= MAX_GROUPS) break
   }
   return out
@@ -976,7 +1061,7 @@ function validateGroups(input) {
       do { id = 'g_' + crypto.randomUUID() } while (ids.has(id))
     }
     ids.add(id)
-    out.push({ id, name, icon: validateGroupIcon(raw.icon) })
+    out.push({ id, name, icon: validateGroupIcon(raw.icon), ...validateGroupHealth(raw) })
   })
   return out
 }
@@ -1014,7 +1099,7 @@ function validateMemberGroups(input, ownerGroups) {
       do { id = 'mg_' + crypto.randomUUID() } while (ids.has(id) || ownerIds.has(id))
     }
     ids.add(id)
-    out.push({ id, name, icon: validateGroupIcon(raw.icon) })
+    out.push({ id, name, icon: validateGroupIcon(raw.icon), ...validateGroupHealth(raw) })
   })
   return out
 }
@@ -1040,7 +1125,7 @@ function normalizeMemberGroups(input, ownerGroups) {
     if (names.has(nameKey) || ownerNames.has(nameKey)) continue
     ids.add(raw.id)
     names.add(nameKey)
-    out.push({ id: raw.id, name, icon: sanitizeGroupIcon(raw.icon) })
+    out.push({ id: raw.id, name, icon: sanitizeGroupIcon(raw.icon), ...sanitizeGroupHealth(raw) })
   }
   return out
 }
@@ -1722,11 +1807,15 @@ async function handleApi(request, url, path, env) {
       result = { config: emptyConfig(), readonly: true, corrupted: false }
     }
     const view = await configForPrincipal(env, result.config, principal)
-    return new Response(buildYaml(view.config), {
+    // 预览与订阅共用同一份渲染：控制台里看到的，就是客户端实际会拿到的
+    const wanted = (url.searchParams.get('format') || '').trim().toLowerCase()
+    const format = SUB_FORMATS.includes(wanted) ? wanted : 'clash'
+    return new Response(renderSubscription(view.config, format), {
       headers: {
         ...baseHeaders(),
-        'content-type': 'text/yaml;charset=UTF-8',
+        'content-type': format === 'clash' ? 'text/yaml;charset=UTF-8' : 'text/plain;charset=UTF-8',
         'cache-control': 'no-store',
+        'x-subscription-format': format,
       },
     })
   }
@@ -2330,6 +2419,8 @@ async function buildMeta(url, result, env, principal, personal) {
     authSource: owner ? (stored ? 'settings' : (envToken ? 'environment' : 'none')) : 'account',
     authTokenHint: subToken ? maskedAuthToken({ authToken: subToken }, env) : null,
     subUrl: subToken ? `${url.origin}/?token=${encodeURIComponent(subToken)}` : null,
+    // 前端据此渲染格式切换，不必再维护一份可能漂移的格式表
+    subFormats: SUB_FORMATS.slice(),
     authType: principal ? principal.kind : null,
     username: principal ? principal.username : null,
     userId: principal && principal.userId ? principal.userId : null,
@@ -2523,7 +2614,24 @@ function pageBody(headOnly, html) {
 /* subscription                                                        */
 /* ------------------------------------------------------------------ */
 
-async function serveSubscription(env, config, headOnly = false) {
+/* 订阅格式：显式 ?format= 永远优先；没带参数时按客户端 UA 兜底。
+   - clash / mihomo / stash / clash-verge → Clash YAML
+   - shadowrocket / v2ray / quantumult / loon / surge 等 → 通用 base64 链接订阅
+   - 浏览器 / curl / 未知 UA → 仍是 Clash YAML（老链接行为完全不变）
+   认不出的 format 值不报错、回落 clash，避免手滑打错就拿到一份空订阅。 */
+function subscriptionFormat(request, url) {
+  const raw = ((url && url.searchParams.get('format')) || '').trim().toLowerCase()
+  if (SUB_FORMATS.includes(raw)) return raw
+  if (raw === 'yaml') return 'clash'
+  if (raw === 'links' || raw === 'txt') return 'uri'
+  const ua = String((request && request.headers.get('user-agent')) || '').toLowerCase()
+  if (/shadowrocket|v2ray|quantumult|loon|surge|nekoray|sing-box|hiddify|clashforwindows|shadow-clash/.test(ua)) {
+    return 'base64'
+  }
+  return 'clash'
+}
+
+async function serveSubscription(env, config, headOnly = false, request, url) {
   if (!config) {
     try {
       config = (await readConfig(env)).config
@@ -2533,9 +2641,10 @@ async function serveSubscription(env, config, headOnly = false) {
     }
   }
 
+  const format = subscriptionFormat(request, url)
   const headers = {
     ...baseHeaders(),
-    'content-type': 'text/yaml;charset=UTF-8',
+    'content-type': format === 'clash' ? 'text/yaml;charset=UTF-8' : 'text/plain;charset=UTF-8',
     'cache-control': 'no-store, max-age=0',
     'profile-update-interval': '12',
     // 订阅 URL 自带令牌，任何索引 / 抓取都会把它抄进第三方缓存
@@ -2543,10 +2652,32 @@ async function serveSubscription(env, config, headOnly = false) {
     ...subscriptionHeaders(config),
     'access-control-allow-origin': '*',
   }
-  // HEAD 用于客户端探活（令牌是否仍然有效）：不渲染 YAML，只回头部
+  // 便于排查「客户端到底拿到了哪种格式」，同时不改变 clash 的既有响应头
+  if (format !== 'clash') headers['x-subscription-format'] = format
+  // HEAD 用于客户端探活（令牌是否仍然有效）：不渲染正文，只回头部
   if (headOnly) return new Response(null, { status: 200, headers })
 
-  return new Response(buildYaml(config), { headers })
+  return new Response(renderSubscription(config, format), { headers })
+}
+
+/* 非 Clash 格式只吐已启用且真正能渲染的节点：
+   buildYaml 与这里共用同一份过滤，避免「YAML 里没有、链接里却有」的坏节点。 */
+function renderableNodes(config) {
+  const enabled = (Array.isArray(config.nodes) ? config.nodes : []).filter(node => node && node.enabled)
+  const taken = policyGroupNames(config)
+  const out = enabled.filter(node => isRenderableNode(node) && !taken.has(node.name))
+  if (out.length !== enabled.length) {
+    console.warn('Skipped invalid nodes while rendering subscription:', enabled.length - out.length)
+  }
+  return out
+}
+
+function renderSubscription(config, format) {
+  if (format === 'clash') return buildYaml(config)
+  const lines = thShareLines(renderableNodes(config))
+  const text = lines.length ? lines.join('\n') + '\n' : ''
+  // 标准 base64（保留 padding）：Shadowrocket / v2rayN / Quantumult 都按这个读
+  return format === 'base64' ? thBase64Text(text) : text
 }
 
 // 未配置流量 / 到期时间时不发送 subscription-userinfo，避免客户端显示虚构额度
@@ -2562,14 +2693,11 @@ function subscriptionHeaders(config) {
 }
 
 function buildYaml(config) {
-  const enabled = config.nodes.filter(node => node.enabled)
+  const enabled = config.nodes.filter(node => node && node.enabled)
   /* 最后一道防线：节点名与策略组同名时 Clash 会整份配置报错。
-     写路径已经拦过，这里兜住手工编辑 KV、成员个人节点与旧数据。 */
-  const taken = policyGroupNames(config)
-  const renderable = enabled.filter(node => isRenderableNode(node) && !taken.has(node.name))
-  if (renderable.length !== enabled.length) {
-    console.warn('Skipped invalid nodes while rendering YAML:', enabled.length - renderable.length)
-  }
+     写路径已经拦过，这里兜住手工编辑 KV、成员个人节点与旧数据。
+     renderableNodes 同时供 base64 / URI 订阅使用，两种输出不会漂移。 */
+  const renderable = renderableNodes(config)
   const time = new Intl.DateTimeFormat('zh-CN', {
     year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', second: '2-digit',
@@ -2774,7 +2902,7 @@ function buildProxyGroups(config) {
         return ra - rb
       })
       .map(node => node.name)
-    buckets.push({ id: group.id, name: group.name, icon: group.icon, members })
+    buckets.push({ id: group.id, name: group.name, icon: group.icon, ...sanitizeGroupHealth(group), members })
   })
 
   const mainProxies = [
@@ -2789,7 +2917,13 @@ function buildProxyGroups(config) {
   }]
 
   buckets.forEach(bucket => {
-    out.push({ name: bucket.name, icon: bucket.icon, proxies: bucket.members })
+    // 策略参数必须一路带到 YAML：漏掉这里就会静默退回 select
+    out.push({
+      name: bucket.name,
+      icon: bucket.icon,
+      ...sanitizeGroupHealth(bucket),
+      proxies: bucket.members,
+    })
   })
 
   // 分组名是用户可改的：应用策略组按 id 查当前名字，分组被删掉就不再引用它
@@ -2818,7 +2952,17 @@ function buildProxyGroups(config) {
 function groupToYaml(group) {
   const lines = [`- name: ${yq(group.name)}`]
   if (group.icon) lines.push(`  icon: ${yq(group.icon)}`)
-  lines.push('  type: select')
+  /* select 是旧版唯一输出：分支里不新增任何字段，升级前后逐字一致。
+     其余三种交给客户端做延迟探测 / 故障转移 / 负载均衡。 */
+  const health = sanitizeGroupHealth(group)
+  lines.push(`  type: ${health.strategy}`)
+  if (health.strategy !== 'select') {
+    lines.push(`  url: ${yq(health.url)}`)
+    lines.push(`  interval: ${health.interval}`)
+    if (health.strategy === 'url-test' && Number.isInteger(health.tolerance)) {
+      lines.push(`  tolerance: ${health.tolerance}`)
+    }
+  }
   lines.push('  proxies:')
   group.proxies.forEach(proxy => lines.push(`    - ${yq(proxy)}`))
   return lines.join('\n')

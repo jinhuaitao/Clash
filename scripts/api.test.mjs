@@ -48,8 +48,9 @@ const escapeTemplate = value => value
   .replace(/`/g, '\\`')
   .replace(/\$\{/g, '\\${')
 
-const [workerSource, staticHead, staticRules] = await Promise.all([
+const [workerSource, shareLinks, staticHead, staticRules] = await Promise.all([
   read('src/worker.js'),
+  read('src/share-links.js'),
   read('src/static-head.yaml'),
   read('src/rules.yaml'),
 ])
@@ -57,6 +58,7 @@ const [workerSource, staticHead, staticRules] = await Promise.all([
 const source = workerSource
   .replace('__STATIC_HEAD__', () => escapeTemplate(staticHead.trimEnd()))
   .replace('__STATIC_RULES__', () => escapeTemplate(staticRules.trim()))
+  .replace('/*__SHARE_LINKS__*/', () => shareLinks.trimEnd())
   // 控制台 HTML 与本题测试无关，占位即可
   .replace('__ADMIN_HTML__', () => '<html>ADMIN __CSP_NONCE__</html>')
 
@@ -1146,6 +1148,13 @@ group('令牌与会话加固')
   const legacy = 'sub_' + 'B'.repeat(43)
   check('旧格式订阅令牌不会误判通过', (await call(env, '/?token=' + encodeURIComponent(legacy))).contentType.startsWith('text/html'))
 
+  // 成员专属令牌走的是另一条订阅分支，也要拿到同样的三种格式
+  const memberUri = await call(env, '/?token=' + encodeURIComponent(memberSub) + '&format=uri')
+  eq('成员订阅也支持 URI 格式', memberUri.headers.get('x-subscription-format'), 'uri')
+  check('成员 URI 只含其可见节点', memberUri.body.includes('ss://') && memberUri.body.includes('A-01'))
+  const memberB64 = await call(env, '/?token=' + encodeURIComponent(memberSub) + '&format=base64')
+  eq('成员 base64 与 URI 同源', Buffer.from(memberB64.body, 'base64').toString('utf8'), memberUri.body)
+
   const hashBase = await putConfig(env, token, {
     rev: await currentRev(env, token),
     nodes: [ssNode({ id: 'n_a', name: 'A-01' })],
@@ -1304,6 +1313,166 @@ group('脏数据与令牌形态')
   const codes = []
   for (let i = 0; i < 150; i++) codes.push((await call(rl, '/?token=wrong-token-xxxx', { ip })).status)
   eq('错误令牌每次只扣一次配额', codes.every(code => code === 200), true)
+}
+
+group('多格式订阅输出')
+{
+  const env = makeEnv()
+  const token = await initConsole(env)
+  await putConfig(env, token, {
+    rev: 0, nodes: fullNodes(), authToken: SUB_TOKEN,
+    subscription: { totalGB: 500, expire: '2026-12-31' },
+  })
+
+  // 老链接必须逐字保持原来的行为：默认 YAML、不带任何新响应头
+  const clash = await call(env, '/?token=' + SUB_TOKEN)
+  eq('默认仍是 Clash YAML', clash.contentType, 'text/yaml;charset=UTF-8')
+  eq('默认不带 format 响应头', clash.headers.get('x-subscription-format'), null)
+  check('默认 YAML 三段齐备', clash.body.includes('proxy-groups:') && clash.body.includes('proxies:'))
+
+  const uri = await call(env, '/?token=' + SUB_TOKEN + '&format=uri')
+  eq('URI 订阅 200', uri.status, 200)
+  eq('URI 订阅是纯文本', uri.contentType.startsWith('text/plain'), true)
+  eq('URI 响应头标注格式', uri.headers.get('x-subscription-format'), 'uri')
+  eq('URI 只输出 5 个已启用节点', uri.body.trim().split('\n').length, 5)
+  check('URI 覆盖五种协议', ['vless://', 'trojan://', 'vmess://', 'hysteria2://', 'ss://'].every(s => uri.body.includes(s)))
+  check('URI 不含停用节点', !uri.body.includes('off.example.com'))
+  check('URI 带节点名', uri.body.includes('HK-01'))
+  check('URI 没有 undefined 字面量', !uri.body.includes('undefined'))
+  check('非 Clash 格式仍带 userinfo', String(uri.headers.get('subscription-userinfo')).includes('total='))
+
+  const b64 = await call(env, '/?token=' + SUB_TOKEN + '&format=base64')
+  eq('base64 响应头标注格式', b64.headers.get('x-subscription-format'), 'base64')
+  check('base64 是标准编码', /^[A-Za-z0-9+/]+={0,2}$/.test(b64.body.trim()))
+  eq('base64 解码后与 URI 完全一致', Buffer.from(b64.body, 'base64').toString('utf8'), uri.body)
+
+  // 显式参数优先于 UA；认不出的值不报错、回落 YAML
+  const sr = await call(env, '/?token=' + SUB_TOKEN, { headers: { 'user-agent': 'Shadowrocket/2.2.0' } })
+  eq('Shadowrocket UA 自动转 base64', sr.headers.get('x-subscription-format'), 'base64')
+  eq('Shadowrocket 拿到的是真 base64', Buffer.from(sr.body, 'base64').toString('utf8'), uri.body)
+  const v2ray = await call(env, '/?token=' + SUB_TOKEN, { headers: { 'user-agent': 'v2rayN/6.0' } })
+  eq('v2rayN UA 自动转 base64', v2ray.headers.get('x-subscription-format'), 'base64')
+  const meta = await call(env, '/?token=' + SUB_TOKEN, { headers: { 'user-agent': 'Clash.Meta/1.18.0 Mihomo' } })
+  check('Clash 系 UA 保持 YAML', meta.body.includes('proxy-groups:') && !meta.headers.get('x-subscription-format'))
+  const browser = await call(env, '/?token=' + SUB_TOKEN, { headers: { 'user-agent': 'Mozilla/5.0' } })
+  check('未知 UA 保持 YAML', browser.body.includes('proxy-groups:'))
+  const explicit = await call(env, '/?token=' + SUB_TOKEN + '&format=uri', { headers: { 'user-agent': 'Shadowrocket/2.2.0' } })
+  eq('显式 format 优先于 UA', explicit.headers.get('x-subscription-format'), 'uri')
+  eq('yaml 别名映射 Clash', (await call(env, '/?token=' + SUB_TOKEN + '&format=yaml')).body.includes('proxy-groups:'), true)
+  eq('links 别名映射 URI', (await call(env, '/?token=' + SUB_TOKEN + '&format=links')).headers.get('x-subscription-format'), 'uri')
+  eq('未知 format 回落 Clash', (await call(env, '/?token=' + SUB_TOKEN + '&format=nope')).body.includes('proxy-groups:'), true)
+
+  const head = await call(env, '/?token=' + SUB_TOKEN + '&format=base64', { method: 'HEAD' })
+  eq('HEAD 也标注格式', head.headers.get('x-subscription-format'), 'base64')
+  eq('HEAD 不返回正文', head.body, '')
+  const wrong = await call(env, '/?token=wrong-token-xxxx&format=uri')
+  check('错误令牌不会绕过伪装页', wrong.contentType.startsWith('text/html') && !wrong.body.includes('vless://'))
+
+  const empty = makeEnv()
+  const et = await initConsole(empty)
+  await putConfig(empty, et, { rev: 0, nodes: [], authToken: SUB_TOKEN })
+  eq('空订阅 URI 为空串', (await call(empty, '/?token=' + SUB_TOKEN + '&format=uri')).body, '')
+  eq('空订阅 base64 为空串', (await call(empty, '/?token=' + SUB_TOKEN + '&format=base64')).body, '')
+
+  // IPv6 字面量在 URI 的 authority 里必须加方括号，否则端口会被吞掉
+  const v6env = makeEnv()
+  const v6token = await initConsole(v6env)
+  await putConfig(v6env, v6token, {
+    rev: 0, authToken: SUB_TOKEN,
+    nodes: [{ id: 'n_v6', name: 'V6-01', type: 'trojan', server: '2001:db8::1', port: 443, enabled: true, password: 'p', sni: '', udp: true }],
+  })
+  const v6 = await call(v6env, '/?token=' + SUB_TOKEN + '&format=uri')
+  check('IPv6 地址被方括号包住', v6.body.includes('@[2001:db8::1]:443'), v6.body.slice(0, 120))
+}
+
+group('预览与订阅共用渲染')
+{
+  const env = makeEnv()
+  const token = await initConsole(env)
+  await putConfig(env, token, { rev: 0, authToken: SUB_TOKEN, nodes: fullNodes() })
+
+  for (const format of ['clash', 'uri', 'base64']) {
+    const suffix = format === 'clash' ? '' : '?format=' + format
+    const sub = await call(env, '/?token=' + SUB_TOKEN + (format === 'clash' ? '' : '&format=' + format))
+    const preview = await call(env, '/api/preview' + suffix, { headers: bearer(token) })
+    eq(`预览 ${format} 与订阅逐字一致`, preview.body, sub.body)
+  }
+  eq('预览默认 YAML 类型', (await call(env, '/api/preview', { headers: bearer(token) })).contentType, 'text/yaml;charset=UTF-8')
+  eq('预览 base64 响应头', (await call(env, '/api/preview?format=base64', { headers: bearer(token) })).headers.get('x-subscription-format'), 'base64')
+  eq('未知预览格式回落 YAML', (await call(env, '/api/preview?format=nope', { headers: bearer(token) })).body.includes('proxies:'), true)
+}
+
+group('策略组类型与健康检查')
+{
+  const env = makeEnv()
+  const token = await initConsole(env)
+  const makeNode = (id, name, groupId, server) => ({
+    id, name, type: 'ss', server, port: 8388, groupId, enabled: true,
+    cipher: 'aes-256-gcm', password: 'p-' + id,
+  })
+  const nodes = [
+    makeNode('n_a', 'A-01', 'g_select', 'a.example.com'),
+    makeNode('n_b', 'B-01', 'g_fast', 'b.example.com'),
+    makeNode('n_c', 'C-01', 'g_fb', 'c.example.com'),
+    makeNode('n_d', 'D-01', 'g_lb', 'd.example.com'),
+  ]
+  const groups = [
+    { id: 'g_select', name: '手动选择组', icon: '' },
+    { id: 'g_fast', name: '自动测速组', icon: '', strategy: 'url-test', url: 'https://www.gstatic.com/generate_204', interval: 300, tolerance: 50 },
+    { id: 'g_fb', name: '故障转移组', icon: '', strategy: 'fallback', interval: 600 },
+    { id: 'g_lb', name: '负载均衡组', icon: '', strategy: 'load-balance' },
+  ]
+  const saved = await putConfig(env, token, { rev: 0, authToken: SUB_TOKEN, groups, nodes })
+  eq('四种策略组保存成功', saved.status, 200)
+
+  const readBack = (await getConfig(env, token)).body.config.groups
+  eq('读回策略类型', readBack.map(g => g.strategy).join(','), 'select,url-test,fallback,load-balance')
+  eq('缺 url 补默认值', readBack.find(g => g.id === 'g_fb').url, 'https://www.gstatic.com/generate_204')
+  eq('缺 interval 补默认值', readBack.find(g => g.id === 'g_lb').interval, 300)
+  eq('select 不带探测字段', Object.prototype.hasOwnProperty.call(readBack.find(g => g.id === 'g_select'), 'url'), false)
+  eq('select 不带 interval', Object.prototype.hasOwnProperty.call(readBack.find(g => g.id === 'g_select'), 'interval'), false)
+
+  const sub = await call(env, '/?token=' + SUB_TOKEN)
+  const section = sub.body.split('proxy-groups:')[1].split('rule-providers:')[0]
+  const fast = section.split('- name: "自动测速组"')[1].split('- name:')[0]
+  check('url-test 输出类型 / 探测地址 / 间隔 / 容差',
+    fast.includes('type: url-test') && fast.includes('url: "https://www.gstatic.com/generate_204"') &&
+    fast.includes('interval: 300') && fast.includes('tolerance: 50'), fast.slice(0, 200))
+  const fb = section.split('- name: "故障转移组"')[1].split('- name:')[0]
+  check('fallback 输出类型与自定义间隔', fb.includes('type: fallback') && fb.includes('interval: 600') && !fb.includes('tolerance:'))
+  const lb = section.split('- name: "负载均衡组"')[1].split('- name:')[0]
+  check('load-balance 输出类型与探测地址', lb.includes('type: load-balance') && lb.includes('url:'))
+  const sel = section.split('- name: "手动选择组"')[1].split('- name:')[0]
+  check('select 输出不新增字段（向后兼容）', sel.includes('type: select') && !sel.includes('url:') && !sel.includes('interval:'))
+
+  // 写路径严格：错误要能定位到具体字段，控制台才能标红
+  const badStrategy = await putConfig(env, token, { rev: 1, groups: [{ id: 'a', name: 'A组', strategy: 'magic' }], nodes: [] })
+  eq('未知策略类型 400', badStrategy.status, 400)
+  eq('错误定位到 strategy', badStrategy.body.field, 'strategy')
+  const badUrl = await putConfig(env, token, { rev: 1, groups: [{ id: 'a', name: 'A组', strategy: 'url-test', url: 'javascript:alert(1)' }], nodes: [] })
+  eq('非 https 探测地址 400', badUrl.status, 400)
+  eq('错误定位到 healthUrl', badUrl.body.field, 'healthUrl')
+  const badInterval = await putConfig(env, token, { rev: 1, groups: [{ id: 'a', name: 'A组', strategy: 'fallback', interval: 5 }], nodes: [] })
+  eq('检测间隔越界 400', badInterval.status, 400)
+  eq('错误定位到 healthInterval', badInterval.body.field, 'healthInterval')
+  const badTolerance = await putConfig(env, token, { rev: 1, groups: [{ id: 'a', name: 'A组', strategy: 'url-test', tolerance: 9999 }], nodes: [] })
+  eq('容差越界 400', badTolerance.status, 400)
+  eq('错误定位到 healthTolerance', badTolerance.body.field, 'healthTolerance')
+  const badType = await putConfig(env, token, { rev: 1, groups: [{ id: 'a', name: 'A组', strategy: 42 }], nodes: [] })
+  eq('非字符串策略类型 400', badType.status, 400)
+
+  // 读路径宽松：手工改坏 KV 不能把整份订阅拖成 500
+  const raw = JSON.parse(env.data.get('config'))
+  raw.groups[1].strategy = 'not-real'
+  raw.groups[1].url = 'javascript:alert(1)'
+  raw.groups[1].interval = -9
+  env.data.set('config', JSON.stringify(raw))
+  const robust = await call(env, '/?token=' + SUB_TOKEN)
+  eq('脏策略组不拖垮订阅', robust.status, 200)
+  check('脏策略组回落 select', robust.body.split('- name: "自动测速组"')[1].split('- name:')[0].includes('type: select'))
+  eq('脏策略组读配置仍 200', (await getConfig(env, token)).status, 200)
+  eq('脏策略组读回类型合法', (await getConfig(env, token)).body.config.groups[1].strategy, 'select')
+  flushLogs('group-strategy')
 }
 
 /* ================= 收尾 ================= */

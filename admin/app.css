@@ -2663,3 +2663,84 @@ html[data-theme="dark"] .status-dot {
     box-shadow: var(--shadow-xs), var(--hairline);
   }
 }
+
+/* ---------- 16. 订阅格式 / 配置体检 / 策略组 / 命令面板 ---------- */
+
+/* 格式切换贴在订阅卡片下方：默认 Clash，另两种给通用客户端 */
+.sub-formats { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
+.sub-formats button {
+  padding: 4px 11px;
+  border: 1px solid var(--line-2); border-radius: 999px;
+  background: transparent; color: var(--muted);
+  font: inherit; font-size: 10.5px; font-weight: 600; cursor: pointer;
+  transition: color .16s ease, background .16s ease, border-color .16s ease;
+}
+.sub-formats button:hover { color: var(--text); border-color: var(--accent-soft-2); }
+.sub-formats button.is-active { background: var(--accent-soft); border-color: transparent; color: var(--accent-text); }
+.sub-formats button:focus-visible { outline: none; box-shadow: var(--ring); }
+.sub-format-note { margin-left: auto; font-size: 10px; color: var(--faint); }
+
+/* 订阅信息里的到期进度：宽度由 CSSOM 写入（CSP 不允许内联 style 属性） */
+.expire-track { height: 5px; margin: 2px 0 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel-inset); overflow: hidden; }
+.expire-fill { display: block; width: 0; height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--success), var(--accent-3)); transition: width .3s ease; }
+
+/* 配置体检：每条结论都能直接跳到出问题的页面 */
+.diag-list { display: flex; flex-direction: column; gap: 8px; max-height: 236px; overflow-y: auto; }
+.diag-item { display: flex; align-items: flex-start; gap: 9px; padding: 9px 11px; border: 1px solid var(--line); border-radius: var(--r-2); background: var(--panel-soft); }
+.diag-item.is-warn { border-color: color-mix(in srgb, var(--warning) 26%, var(--line)); background: var(--warning-soft); }
+.diag-item.is-danger { border-color: color-mix(in srgb, var(--danger) 24%, var(--line)); background: var(--danger-soft); }
+.diag-item.is-ok { border-color: color-mix(in srgb, var(--success) 22%, var(--line)); background: var(--success-soft); }
+.diag-dot { width: 7px; height: 7px; margin-top: 5px; border-radius: 50%; background: var(--faint); flex: none; }
+.diag-item.is-warn .diag-dot { background: var(--warning); }
+.diag-item.is-danger .diag-dot { background: var(--danger); }
+.diag-item.is-ok .diag-dot { background: var(--success); }
+.diag-text { flex: 1; min-width: 0; font-size: 11.5px; line-height: 1.55; color: var(--text-2); }
+.diag-text b { display: block; margin-bottom: 1px; font-size: 12px; font-weight: 640; color: var(--text); }
+.diag-action { flex: none; padding: 2px 0; border: 0; background: none; color: var(--accent-text); font: inherit; font-size: 11px; font-weight: 600; cursor: pointer; }
+.diag-action:hover { text-decoration: underline; }
+.diag-empty { display: flex; align-items: center; gap: 8px; padding: 10px 2px; font-size: 11.5px; color: var(--muted); }
+.diag-empty .icon { width: 15px; height: 15px; color: var(--success); }
+
+/* 分组卡片上的「自动测速 / 故障转移」徽章 */
+.group-badge.is-strategy { background: var(--accent-soft); border-color: transparent; color: var(--accent-text); }
+
+/* 预览页格式切换沿用 segmented，只是更紧凑一点 */
+.preview-format { flex: none; }
+.preview-format button { padding: 6px 11px; font-size: 11px; }
+
+/* 命令面板：靠上浮出，输入框 + 分组结果 + 键盘提示 */
+.cmd-layer { align-items: flex-start; padding-top: min(14vh, 120px); }
+.cmd-panel {
+  position: relative; z-index: 1; width: min(560px, 100%);
+  display: flex; flex-direction: column; overflow: hidden;
+  border: 1px solid var(--line-2); border-radius: var(--r-4);
+  background: var(--panel); box-shadow: var(--shadow-lg);
+  opacity: 0; transform: translateY(-10px) scale(.985);
+  transition: opacity .18s ease, transform .18s ease;
+}
+.cmd-layer.is-open .cmd-panel { opacity: 1; transform: none; }
+.cmd-input-wrap { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.cmd-input-wrap > .icon { width: 17px; height: 17px; color: var(--faint); flex: none; }
+.cmd-input-wrap input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: 14px; }
+.cmd-input-wrap input::placeholder { color: var(--faint); }
+.cmd-list { max-height: 340px; overflow-y: auto; padding: 8px; }
+.cmd-group { padding: 8px 10px 4px; font-size: 10px; font-weight: 650; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
+.cmd-item {
+  display: flex; align-items: center; gap: 11px; width: 100%;
+  padding: 9px 10px; border: 0; border-radius: var(--r-2);
+  background: transparent; color: var(--text-2);
+  font: inherit; font-size: 12.5px; text-align: left; cursor: pointer;
+}
+.cmd-item:hover, .cmd-item.is-active { background: var(--accent-soft); color: var(--text); }
+.cmd-item-icon { width: 28px; height: 28px; display: grid; place-items: center; flex: none; border: 1px solid var(--line); border-radius: var(--r-1); background: var(--panel-inset); color: var(--accent-text); }
+.cmd-item-icon .icon { width: 15px; height: 15px; }
+.cmd-item-text { flex: 1; min-width: 0; font-weight: 600; }
+.cmd-item-hint { font-size: 10.5px; font-weight: 400; color: var(--faint); white-space: nowrap; }
+.cmd-empty { padding: 26px 12px; text-align: center; font-size: 12px; color: var(--faint); }
+.cmd-foot { display: flex; gap: 16px; padding: 10px 16px; border-top: 1px solid var(--line); background: var(--panel-soft); font-size: 10.5px; color: var(--faint); }
+.cmd-foot span { display: inline-flex; align-items: center; gap: 4px; }
+@media (max-width: 560px) {
+  .cmd-layer { padding-top: 8vh; }
+  .cmd-item-hint { display: none; }
+  .sub-format-note { width: 100%; margin-left: 0; }
+}

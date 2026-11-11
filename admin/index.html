@@ -305,12 +305,18 @@
               <button class="btn btn-ghost-light" type="button" id="hero-preview"><svg class="icon"><use href="#i-code"></use></svg>订阅预览</button>
             </div>
             <div class="sub-card">
-              <div class="sub-card-head"><span>订阅链接</span><span>包含访问令牌，请妥善保管</span></div>
+              <div class="sub-card-head"><span>订阅链接</span><span id="sub-format-hint">Clash YAML · 包含访问令牌，请妥善保管</span></div>
               <div class="sub-input">
                 <svg class="icon"><use href="#i-link"></use></svg>
                 <code id="sub-url-text">—</code>
                 <button class="sub-icon-btn" type="button" id="sub-reveal" title="显示 / 隐藏令牌" aria-label="显示或隐藏令牌"><svg class="icon"><use href="#i-eye"></use></svg></button>
                 <button class="sub-icon-btn" type="button" id="sub-copy" title="复制订阅链接" aria-label="复制订阅链接"><svg class="icon"><use href="#i-copy"></use></svg></button>
+              </div>
+              <div class="sub-formats" id="sub-formats" role="group" aria-label="订阅格式">
+                <button type="button" data-sub-format="clash" class="is-active">Clash</button>
+                <button type="button" data-sub-format="base64">Base64</button>
+                <button type="button" data-sub-format="uri">URI 列表</button>
+                <span class="sub-format-note" id="sub-format-note">Mihomo / Stash / Clash Verge 使用</span>
               </div>
             </div>
           </div>
@@ -422,6 +428,25 @@
             <div class="mini-list" id="recent-nodes"></div>
           </section>
         </div>
+
+        <div class="overview-grid">
+          <section class="panel">
+            <div class="panel-head">
+              <div><h3>订阅信息</h3><p>写入响应头，供客户端显示流量与到期</p></div>
+              <span class="soft-pill" id="sub-info-state">未设置</span>
+            </div>
+            <ul class="kv-list" id="sub-info-list"></ul>
+            <div class="expire-track" id="expire-track" hidden><span class="expire-fill" id="expire-fill"></span></div>
+            <p class="panel-note">仅用于展示，不参与鉴权与限速；留空时订阅不会发送 <code>subscription-userinfo</code>。</p>
+          </section>
+          <section class="panel">
+            <div class="panel-head">
+              <div><h3>配置体检</h3><p>自动检查会影响订阅可用性的问题</p></div>
+              <span class="soft-pill soft-ok" id="diag-state">全部正常</span>
+            </div>
+            <div class="diag-list" id="diag-list"></div>
+          </section>
+        </div>
       </section>
 
       <section class="view" data-view-panel="nodes" hidden>
@@ -461,6 +486,14 @@
             <div class="select-wrap">
               <select id="filter-group" aria-label="按分组筛选">
                 <option value="all">全部分组</option>
+              </select>
+              <svg class="icon"><use href="#i-chevron"></use></svg>
+            </div>
+            <div class="select-wrap">
+              <select id="filter-status" aria-label="按启用状态筛选">
+                <option value="all">全部状态</option>
+                <option value="enabled">已启用</option>
+                <option value="disabled">已停用</option>
               </select>
               <svg class="icon"><use href="#i-chevron"></use></svg>
             </div>
@@ -534,6 +567,39 @@
               <div class="field-error" data-error="groupIcon"></div>
             </div>
           </div>
+          <div class="field-row">
+            <div class="field">
+              <label for="group-strategy">策略类型</label>
+              <div class="select-wrap select-block">
+                <select id="group-strategy">
+                  <option value="select">手动选择 · select</option>
+                  <option value="url-test">自动测速 · url-test</option>
+                  <option value="fallback">故障转移 · fallback</option>
+                  <option value="load-balance">负载均衡 · load-balance</option>
+                </select>
+                <svg class="icon"><use href="#i-chevron"></use></svg>
+              </div>
+              <div class="field-error" data-error="strategy"></div>
+              <div class="field-hint">手动选择为默认；其余类型由客户端按健康检查自动切换节点。</div>
+            </div>
+            <div class="field">
+              <label for="group-health-url">健康检查地址</label>
+              <input id="group-health-url" placeholder="https://www.gstatic.com/generate_204" autocomplete="off" spellcheck="false">
+              <div class="field-error" data-error="healthUrl"></div>
+            </div>
+          </div>
+          <div class="field-row" id="group-health-row" hidden>
+            <div class="field">
+              <label for="group-health-interval">检测间隔（秒）</label>
+              <input id="group-health-interval" type="number" min="30" max="3600" inputmode="numeric" placeholder="300">
+              <div class="field-error" data-error="healthInterval"></div>
+            </div>
+            <div class="field" id="group-tolerance-field" hidden>
+              <label for="group-health-tolerance">切换容差（毫秒）</label>
+              <input id="group-health-tolerance" type="number" min="0" max="1000" inputmode="numeric" placeholder="留空则用客户端默认">
+              <div class="field-error" data-error="healthTolerance"></div>
+            </div>
+          </div>
           <div class="group-form-foot">
             <span class="field-hint">名称开头的 emoji 会作为控制台里的分组头像；图标地址只影响客户端的策略组图标。</span>
             <div class="group-form-actions">
@@ -560,9 +626,14 @@
             <p class="page-sub">查看当前配置生成的 Clash YAML，保存节点后会自动刷新。</p>
           </div>
           <div class="page-actions">
+            <div class="segmented preview-format" id="preview-format" role="group" aria-label="预览格式">
+              <button type="button" data-preview-format="clash" class="is-active">Clash</button>
+              <button type="button" data-preview-format="base64">Base64</button>
+              <button type="button" data-preview-format="uri">URI</button>
+            </div>
             <button class="btn btn-secondary" type="button" id="preview-refresh"><svg class="icon"><use href="#i-refresh"></use></svg>刷新</button>
             <button class="btn btn-secondary" type="button" id="preview-download"><svg class="icon"><use href="#i-download"></use></svg>下载</button>
-            <button class="btn btn-primary" type="button" id="preview-copy"><svg class="icon"><use href="#i-copy"></use></svg>复制 YAML</button>
+            <button class="btn btn-primary" type="button" id="preview-copy"><svg class="icon"><use href="#i-copy"></use></svg>复制内容</button>
           </div>
         </div>
 
@@ -1272,6 +1343,19 @@
         <button class="btn btn-primary" type="button" id="links-confirm" disabled>导入节点</button>
       </div>
     </footer>
+  </div>
+</div>
+
+<div class="modal-layer cmd-layer" id="cmd-layer" hidden>
+  <div class="modal-backdrop" data-close-modal="cmd"></div>
+  <div class="cmd-panel" role="dialog" aria-modal="true" aria-label="命令面板">
+    <div class="cmd-input-wrap">
+      <svg class="icon"><use href="#i-search"></use></svg>
+      <input id="cmd-input" type="text" placeholder="搜索视图或操作…" autocomplete="off" spellcheck="false" aria-label="搜索命令">
+      <kbd>esc</kbd>
+    </div>
+    <div class="cmd-list" id="cmd-list" role="listbox" aria-label="命令列表"></div>
+    <div class="cmd-foot"><span><kbd>↑</kbd><kbd>↓</kbd> 选择</span><span><kbd>↵</kbd> 执行</span><span><kbd>⌘</kbd><kbd>K</kbd> 打开</span></div>
   </div>
 </div>
 

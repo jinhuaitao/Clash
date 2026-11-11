@@ -11,7 +11,7 @@ Clash / Mihomo 订阅生成器 · 可视化管理控制台 · 零运行时依赖
 <img src="https://img.shields.io/badge/Cloudflare-Workers-f6821f?style=flat-square&logo=cloudflare&logoColor=white" alt="Cloudflare Workers">
 <img src="https://img.shields.io/badge/存储-Cloudflare%20KV-2b2f36?style=flat-square&logo=cloudflare&logoColor=white" alt="Cloudflare KV">
 <img src="https://img.shields.io/badge/运行时依赖-0-16a34a?style=flat-square" alt="零依赖">
-<img src="https://img.shields.io/badge/version-2.9.0-4f46e5?style=flat-square" alt="v2.9.0">
+<img src="https://img.shields.io/badge/version-2.10.0-4f46e5?style=flat-square" alt="v2.10.0">
 <img src="https://img.shields.io/badge/license-MIT-2563eb?style=flat-square" alt="MIT">
 
 <br><br>
@@ -38,15 +38,40 @@ flowchart LR
 
 | 模块 | 能力 |
 | :--- | :--- |
-| **订阅** | `/?token=…` 直接输出可用的 Clash / Mihomo YAML，12 小时自动更新；配置流量后附带 `subscription-userinfo` |
-| **节点** | 增删改、启停、拖序、搜索筛选、Shift 连选、批量操作与一键撤销 |
-| **分组** | 自定义策略组，改名 / 换图标 / 调顺序；节点随分组走，改名不断链。成员也能新建只对自己订阅生效的分组 |
+| **订阅** | 一条链接输出三种格式：Clash YAML、通用 Base64、URI 列表；按客户端 UA 自动适配，12 小时自动更新；配置流量后附带 `subscription-userinfo` |
+| **节点** | 增删改、启停、拖序、按协议 / 分组 / 状态筛选、搜索、Shift 连选、批量操作与一键撤销 |
+| **分组** | 自定义策略组，改名 / 换图标 / 调顺序；`select` / `url-test` / `fallback` / `load-balance` 四种策略与健康检查参数；成员也能新建只对自己订阅生效的分组 |
 | **导入导出** | VLESS、Hysteria2、Trojan、VMess、SS 分享链接批量互转 |
-| **预览** | 实时 YAML、分组统计、全文搜索、复制与下载 |
+| **预览** | 三种订阅格式实时切换预览、分组统计、全文搜索、复制与下载 |
+| **体检** | 概览自动检查令牌、停用节点、重复端点、缺公钥 / SNI、跳过证书校验等问题，每条可一键跳转；订阅信息与到期天数集中展示 |
 | **账号** | 所有者 / 成员两级，成员只管自己的节点，共享节点由所有者分配 |
+| **效率** | `⌘/Ctrl + K` 命令面板，快速跳视图与执行常用操作；`/` 聚焦搜索；`⌘/Ctrl + S` 保存节点 |
 | **伪装** | 令牌不对时返回一个像模像样的「IP 地址查询」页，而不是 404 |
 
 **支持协议**：VLESS（Reality / WS / gRPC）· Hysteria2 · Trojan · VMess · Shadowsocks（SIP002）
+
+### 📡 一条链接，三种格式
+
+订阅生成与控制台「导出链接」共用 `src/share-links.js`，构建时内联到 Worker 与前端，**两种输出不可能出现规则漂移**。
+
+| `?format=` | 内容类型 | 给谁用 |
+| :--- | :--- | :--- |
+| 不填 / `clash` | Clash / Mihomo YAML | Clash、Mihomo、Stash、Clash Verge（**默认，老链接行为不变**） |
+| `base64` | 标准 Base64 编码的分享链接列表 | Shadowrocket、v2rayN、Quantumult、Loon、Surge |
+| `uri` | 纯文本分享链接，每行一条 | 调试、二次导入、自建脚本 |
+
+不带 `format` 时会读 `User-Agent`：通用客户端自动拿 Base64，Clash 系与浏览器仍拿 YAML；显式参数永远优先。三种格式都只吐「已启用且能渲染」的节点，跳过坏节点而不是让整份订阅失败。
+
+### 🧭 策略组类型
+
+| 类型 | 行为 |
+| :--- | :--- |
+| `select` | 手动选择（默认，升级前后 YAML 逐字一致） |
+| `url-test` | 按健康检查延迟自动选最快，可设切换容差 |
+| `fallback` | 按列表顺序故障转移 |
+| `load-balance` | 在成员间分摊连接 |
+
+健康检查地址、检测间隔与容差在「分组管理」里配置；服务端写路径严格校验（非 HTTPS 地址、越界间隔都会 400 并定位到字段），读路径遇到手工改坏的 KV 会静默回落 `select`，不会把整份订阅拖成 500。
 
 ## 🚀 快速开始
 
@@ -127,7 +152,7 @@ npx wrangler secret put ADMIN_TOKEN   # 16 位以上的随机字符串
 
 | 方法 | 路径 | 鉴权 | 说明 |
 | :--- | :--- | :--- | :--- |
-| `GET` `HEAD` | `/?token=…` | 查询令牌或 `Bearer` | 订阅 YAML；令牌错误返回伪装页 |
+| `GET` `HEAD` | `/?token=…[&format=…]` | 查询令牌或 `Bearer` | 订阅内容，`format` 支持 `clash`（默认）/ `base64` / `uri`，也按 UA 自动适配；令牌错误返回伪装页 |
 | `GET` | `/admin` `/console` | 页面内登录 | 控制台 |
 | `GET` | `/api/auth` | 公开 | `needsSetup` / `setupLocked` / `recovery` / `corrupted` |
 | `POST` | `/api/setup` | 公开 | 创建首个管理员；未配 `ADMIN_TOKEN` 返回 `503` |
@@ -135,7 +160,7 @@ npx wrangler secret put ADMIN_TOKEN   # 16 位以上的随机字符串
 | `GET` | `/api/config` | 会话 | 配置与运行状态，成员的响应只含其可见节点 |
 | `PUT` | `/api/config` | 所有者 | 整体保存（含 `groups`），`rev` 乐观锁 |
 | `PUT` | `/api/nodes` | 成员 | 保存个人节点与个人分组，`personalRev` 乐观锁 |
-| `GET` | `/api/preview` | 会话 | 当前配置渲染出的 YAML |
+| `GET` | `/api/preview[?format=…]` | 会话 | 与订阅共用同一份渲染，可预览三种格式 |
 | `POST` | `/api/password` | 会话 | 自助改密，返回新会话令牌 |
 | `GET` `POST` | `/api/users` `/update` `/delete` | 所有者 | 账号列表、新建、改角色 / 范围 / 密码、删除 |
 
@@ -150,7 +175,9 @@ npx wrangler secret put ADMIN_TOKEN   # 16 位以上的随机字符串
   "authToken": "…", "providerBase": "",
   "defaults": { "vlessUuid": "…", "vlessPublicKey": "…", "vlessServername": "…", "vlessPort": 443 },
   "subscription": { "totalGB": 500, "expire": "2026-12-31" },
-  "groups": [{ "id": "hk", "name": "🇭🇰港台节点", "icon": "https://…/Hong_Kong.png" }],
+  "groups": [{ "id": "hk", "name": "🇭🇰港台节点", "icon": "https://…/Hong_Kong.png",
+               "strategy": "url-test", "url": "https://www.gstatic.com/generate_204",
+               "interval": 300, "tolerance": 50 }],
   "regionOrder": { "hk": ["n_xxx"] },
   "nodes": [{ "id": "n_xxx", "name": "HK-01", "type": "vless", "server": "example.com",
               "port": 443, "groupId": "hk", "enabled": true, "uuid": "…", "reality": true }]
@@ -171,13 +198,15 @@ npx wrangler secret put ADMIN_TOKEN   # 16 位以上的随机字符串
 - **TLS 校验默认开启**：只有自签证书且确认链路可信时才勾「跳过证书校验」。
 - **响应头**：CSP（`script-src` / `style-src` 全走 nonce）、`X-Frame-Options: DENY`、COOP / CORP、HSTS、`noindex`。
 - **不可见字符会被拒**：节点名、用户名、服务器地址里的零宽 / 双向控制符，写入与渲染两处都拦。
+- **多格式输出同源**：YAML、Base64、URI 三种订阅与控制台分享链接导出共用 `src/share-links.js`，且共用 `isRenderableNode` 过滤，不会出现「YAML 里没有、链接里却有」的坏节点。
+- **健康检查地址收紧**：策略组的探测 URL 只接受 HTTPS、不含空白 / 引号 / `#?`，避免拼进 YAML 后把后面的字段注释掉。
 
 ## 🛠 本地开发
 
 ```bash
 npm install
-npm test           # 零依赖接口回归，300 项断言，不联网
-npm run build      # 内联 admin/，产出 dist/1.js
+npm test           # 零依赖接口回归，394 项断言，不联网
+npm run build      # 内联 admin/ 与共享模块，产出 dist/1.js
 npm run dev        # 构建 + wrangler dev → http://127.0.0.1:8787/admin
 ```
 
@@ -189,9 +218,10 @@ npm run dev        # 构建 + wrangler dev → http://127.0.0.1:8787/admin
 ```text
 admin/                 控制台前端，构建时内联进 Worker
 src/worker.js          Worker 入口（ES Module）
+src/share-links.js     分享链接生成，构建时同时内联进 Worker 与控制台
 src/static-head.yaml   订阅 YAML 固定头部（端口 / DNS / 模式）
 src/rules.yaml         分流规则与 rule-providers
-build.mjs              内联前端，输出 dist/1.js
+build.mjs              内联前端与共享模块，输出 dist/1.js
 scripts/check.mjs      零依赖静态检查器
 scripts/api.test.mjs   零依赖接口回归测试
 wrangler.toml          Worker 配置 + KV / 限流绑定声明
