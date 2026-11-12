@@ -1,4 +1,4 @@
-/*! Transit Hub v2.10.0 | Cloudflare Worker | built 2026-11-11T08:46:07.097Z */
+/*! Transit Hub v2.10.0 | Cloudflare Worker | built 2026-11-11T23:52:09.488Z */
 export default {
   async fetch(request, env) {
     return await handleRequest(request, env)
